@@ -1,8 +1,7 @@
 import { useNavigate } from "react-router-dom";
+import { useGoogleLogin } from "@react-oauth/google";
 
 const loginStyles = `
-  /* ── Login-specific styles (base vars/reset inherited from HomePage) ── */
-
   .login-page {
     position: relative;
     min-height: 100dvh;
@@ -14,8 +13,6 @@ const loginStyles = `
     overflow: hidden;
     background: #0A0A0F;
   }
-
-  /* Ambient background X (same as home) */
   .login-page .bg-x {
     position: absolute;
     inset: 0;
@@ -31,8 +28,6 @@ const loginStyles = `
     opacity: 0.025;
     animation: pulse-x 6s ease-in-out infinite;
   }
-
-  /* Radial vignette */
   .login-page::before {
     content: '';
     position: absolute;
@@ -41,8 +36,6 @@ const loginStyles = `
     z-index: 1;
     pointer-events: none;
   }
-
-  /* Top rule */
   .login-page .top-bar {
     position: absolute;
     top: 0; left: 0; right: 0;
@@ -52,8 +45,6 @@ const loginStyles = `
     opacity: 0;
     animation: bar-appear 1.2s ease forwards;
   }
-
-  /* Back link */
   .back-link {
     position: absolute;
     top: 2rem;
@@ -76,8 +67,6 @@ const loginStyles = `
     animation: fade-up 0.6s ease 0.2s forwards;
   }
   .back-link:hover { color: #F0EEE9; }
-
-  /* Wordmark */
   .login-page .wordmark {
     position: absolute;
     top: 2rem;
@@ -91,8 +80,6 @@ const loginStyles = `
     animation: fade-up 0.7s ease 0.2s forwards;
   }
   .login-page .wordmark span { color: #6C63FF; }
-
-  /* Card */
   .login-card {
     position: relative;
     z-index: 10;
@@ -108,8 +95,6 @@ const loginStyles = `
     padding: 2.75rem 2.5rem 2.5rem;
     box-shadow: 0 0 0 1px rgba(108,99,255,0.06), 0 32px 64px rgba(0,0,0,0.5);
   }
-
-  /* Card icon */
   .login-icon {
     width: 48px; height: 48px;
     border-radius: 12px;
@@ -122,8 +107,6 @@ const loginStyles = `
     opacity: 0;
     animation: fade-up 0.6s ease 0.55s forwards;
   }
-
-  /* Login title */
   .login-title {
     font-family: 'Space Grotesk', sans-serif;
     font-size: 1.6rem;
@@ -135,8 +118,6 @@ const loginStyles = `
     opacity: 0;
     animation: fade-up 0.6s ease 0.7s forwards;
   }
-
-  /* Login subtitle */
   .login-subtitle {
     font-size: 0.9rem;
     font-weight: 300;
@@ -148,8 +129,6 @@ const loginStyles = `
     opacity: 0;
     animation: fade-up 0.6s ease 0.85s forwards;
   }
-
-  /* Divider */
   .login-divider {
     width: 100%;
     height: 1px;
@@ -158,8 +137,6 @@ const loginStyles = `
     opacity: 0;
     animation: fade-up 0.6s ease 0.9s forwards;
   }
-
-  /* Google button */
   .google-btn {
     position: relative;
     width: 100%;
@@ -182,7 +159,6 @@ const loginStyles = `
     opacity: 0;
     animation: fade-up 0.6s ease 1s forwards;
     margin-bottom: 1rem;
-    width: 100%;
   }
   .google-btn::before {
     content: '';
@@ -192,15 +168,11 @@ const loginStyles = `
     opacity: 0;
     transition: opacity 0.3s ease;
   }
-  .google-btn:hover {
-    border-color: rgba(108,99,255,0.4);
-    background: #1A1A25;
-  }
+  .google-btn:hover { border-color: rgba(108,99,255,0.4); background: #1A1A25; }
   .google-btn:hover::before { opacity: 1; }
+  .google-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .google-btn svg { flex-shrink: 0; position: relative; z-index: 1; }
   .google-btn span { position: relative; z-index: 1; }
-
-  /* Terms note */
   .terms-note {
     font-size: 0.68rem;
     color: #4A4860;
@@ -210,8 +182,6 @@ const loginStyles = `
     opacity: 0;
     animation: fade-up 0.6s ease 1.15s forwards;
   }
-
-  /* Footer */
   .login-page .footer-note {
     position: absolute;
     bottom: 2rem;
@@ -222,8 +192,6 @@ const loginStyles = `
     opacity: 0;
     animation: fade-up 0.7s ease 1.3s forwards;
   }
-
-  /* Shared animations (re-declared so this file is self-contained) */
   @keyframes pulse-x {
     0%, 100% { opacity: 0.025; transform: scale(1); }
     50%       { opacity: 0.04;  transform: scale(1.04); }
@@ -233,24 +201,14 @@ const loginStyles = `
     from { opacity: 0; transform: translateY(18px); }
     to   { opacity: 1; transform: translateY(0); }
   }
-
   @media (max-width: 480px) {
     .login-card { padding: 2rem 1.5rem; }
   }
-
-  @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after {
-      animation-duration: 0.01ms !important;
-      animation-delay:    0.01ms !important;
-      transition-duration: 0.01ms !important;
-    }
-  }
 `;
 
-/* Google "G" logo SVG */
 function GoogleIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
       <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4"/>
       <path d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z" fill="#34A853"/>
       <path d="M3.964 10.706A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.706V4.962H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.038l3.007-2.332z" fill="#FBBC05"/>
@@ -260,62 +218,76 @@ function GoogleIcon() {
 }
 
 export default function LoginPage() {
-  const navigate = useNavigate();
+  const navigate  = useNavigate();
+
+  // ✅ Request BOTH scopes at login — no second OAuth popup ever
+  const login = useGoogleLogin({
+    scope: [
+      "https://www.googleapis.com/auth/userinfo.profile",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/gmail.readonly",
+    ].join(" "),
+
+    onSuccess: async (tokenResponse) => {
+      try {
+        // Save token immediately
+        localStorage.setItem("gmail_token", tokenResponse.access_token);
+
+        // Fetch user profile
+        const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+          headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
+        });
+        const userInfo = await res.json();
+
+        localStorage.setItem("detachx_user", JSON.stringify({
+          name:    userInfo.name,
+          email:   userInfo.email,
+          picture: userInfo.picture,
+        }));
+
+        navigate("/dashboard");
+      } catch (err) {
+        console.error("Login error:", err);
+      }
+    },
+    onError: () => console.error("Google login failed"),
+  });
 
   return (
     <>
       <style>{loginStyles}</style>
       <div className="login-page page-enter">
         <div className="top-bar" />
-
-        {/* Ambient X */}
         <div className="bg-x" aria-hidden="true">
-          <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <svg viewBox="0 0 200 200" fill="none">
             <line x1="20" y1="20" x2="180" y2="180" stroke="#6C63FF" strokeWidth="14" strokeLinecap="round"/>
             <line x1="180" y1="20" x2="20"  y2="180" stroke="#6C63FF" strokeWidth="14" strokeLinecap="round"/>
           </svg>
         </div>
-
-        {/* Back button */}
         <button className="back-link" onClick={() => navigate("/")}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
             <path d="M13 7H1M6 2L1 7l5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
           Back
         </button>
-
-        {/* Wordmark */}
-        <div className="wordmark">
-          Detach<span>X</span>
-        </div>
-
-        {/* Card */}
+        <div className="wordmark">Detach<span>X</span></div>
         <div className="login-card">
-          {/* Icon */}
           <div className="login-icon">
             <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
               <path d="M11 2L13.5 7.5L19.5 8.27L15.25 12.4L16.31 18.38L11 15.6L5.69 18.38L6.75 12.4L2.5 8.27L8.5 7.5L11 2Z" stroke="#6C63FF" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </div>
-
           <h1 className="login-title">Welcome to DetachX</h1>
-
-          <p className="login-subtitle">
-            Connect your Gmail account to scan your digital footprint.
-          </p>
-
+          <p className="login-subtitle">Connect your Gmail account to scan your digital footprint.</p>
           <div className="login-divider" />
-
-          <button className="google-btn">
+          <button className="google-btn" onClick={() => login()}>
             <GoogleIcon />
             <span>Continue with Google</span>
           </button>
-
           <p className="terms-note">
             By continuing, you agree to our Terms of Service<br />and Privacy Policy.
           </p>
         </div>
-
         <p className="footer-note">© 2026 DetachX · All rights reserved</p>
       </div>
     </>
