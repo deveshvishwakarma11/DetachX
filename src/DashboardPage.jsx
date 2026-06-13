@@ -176,10 +176,11 @@ export default function DashboardPage() {
   };
 
   const handleLogout = () => {
-    localStorage.clear();
-    navigate("/");
-  };
-
+  localStorage.removeItem("detachx_user");
+  localStorage.removeItem("gmail_token");
+  localStorage.removeItem("scan_result");
+  navigate("/");
+  };  
   if (!user) return null;
 
   return (

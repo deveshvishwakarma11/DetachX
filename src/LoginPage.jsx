@@ -223,9 +223,10 @@ export default function LoginPage() {
   // ✅ Request BOTH scopes at login — no second OAuth popup ever
   const login = useGoogleLogin({
     scope: [
-      "https://www.googleapis.com/auth/userinfo.profile",
-      "https://www.googleapis.com/auth/userinfo.email",
-      "https://www.googleapis.com/auth/gmail.readonly",
+"https://www.googleapis.com/auth/userinfo.profile",
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.settings.basic",            
     ].join(" "),
 
     onSuccess: async (tokenResponse) => {
