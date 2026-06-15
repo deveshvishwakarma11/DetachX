@@ -339,24 +339,25 @@ export default function ResultsPage() {
   }, []);
 
   const confirmUnsubSuccess = useCallback((item) => {
-    const entry = {
-      domain:   item.domain,
-      from:     item.from,
-      email:    extractEmail(item.from),
-      subject:  item.subject,
-      unsubUrl: item.unsubUrl,
-      action:   "unsubscribed",
-      at:       new Date().toISOString(),
-    };
-    // ✅ Log 5: unsub history save
-    console.log("[DetachX] saveUnsubHistory → SAVING ENTRY", entry);
-    const upd = [...unsubHist, entry];
-    setUnsubHist(upd);
-    saveUnsub(upd);
-    setSelected((p) => { const n = new Set(p); n.delete(item.domain); return n; });
-    setModal({ open: false, type: null, item: null, processing: false });
-    toast(`${item.domain} marked as Unsubscribed ✓`, "success");
-  }, [unsubHist]);
+  const entry = {
+    domain:   item.domain,
+    from:     item.from,
+    email:    extractEmail(item.from),
+    subject:  item.subject,
+    unsubUrl: item.unsubUrl,
+    action:   "unsubscribed",
+    // ✅ Always start as pending — scan will upgrade to confirmed/still_receiving
+    verificationStatus: "pending",
+    at: new Date().toISOString(),
+  };
+  console.log("[DetachX] saveUnsubHistory → SAVING ENTRY (pending)", entry);
+  const upd = [...unsubHist, entry];
+  setUnsubHist(upd);
+  saveUnsub(upd);
+  setSelected((p) => { const n = new Set(p); n.delete(item.domain); return n; });
+  setModal({ open: false, type: null, item: null, processing: false });
+  toast(`${item.domain} unsubscribed — verifying on next scan`, "success");
+}, [unsubHist]);
 
   const reportUnsubFailed = useCallback((item) => {
     setModal({ open: true, type: "unsub-failed", item, processing: false });
@@ -388,15 +389,16 @@ export default function ResultsPage() {
       setTimeout(() => window.open(item.unsubUrl, "_blank", "noopener,noreferrer"), idx * 350)
     );
     const entries = toProc.map((i) => ({
-      domain:            i.domain,
-      from:              i.from,
-      email:             extractEmail(i.from),
-      subject:           i.subject,
-      unsubUrl:          i.unsubUrl,
-      action:            "unsubscribed",
-      needsVerification: true,
-      at:                new Date().toISOString(),
-    }));
+  domain:             i.domain,
+  from:               i.from,
+  email:              extractEmail(i.from),
+  subject:            i.subject,
+  unsubUrl:           i.unsubUrl,
+  action:             "unsubscribed",
+  verificationStatus: "pending",  // ✅ always pending initially
+  needsVerification:  true,
+  at:                 new Date().toISOString(),
+}));
     console.log("[DetachX] bulk unsub → SAVING ENTRIES", entries.map((e) => e.domain));
     const upd = [...unsubHist, ...entries];
     setUnsubHist(upd);
@@ -494,7 +496,56 @@ export default function ResultsPage() {
   if (!result) return null;
 
   const activeList = result.unsubList.filter((i) => !handledDomains.has(i.domain));
+// ── Verification status helpers ──────────────────────────────────────────────
+function getVerificationStatus(item) {
+  // Backward compatible — old entries without field default to "pending"
+  return item.verificationStatus || "pending";
+}
 
+function VerificationBadge({ status }) {
+  if (status === "confirmed") return (
+    <div style={{
+      display: "inline-flex", alignItems: "center", gap: "5px",
+      fontSize: "0.68rem", fontWeight: "600", color: "#22C55E",
+      marginTop: "4px",
+    }}>
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+        <circle cx="5" cy="5" r="4.5" fill="rgba(34,197,94,0.15)" stroke="#22C55E" strokeWidth="0.8"/>
+        <path d="M2.5 5l2 2 3-3" stroke="#22C55E" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+      Confirmed
+    </div>
+  );
+
+  if (status === "still_receiving") return (
+    <div style={{
+      display: "inline-flex", alignItems: "center", gap: "5px",
+      fontSize: "0.68rem", fontWeight: "600", color: "#F59E0B",
+      marginTop: "4px",
+    }}>
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+        <circle cx="5" cy="5" r="4.5" fill="rgba(245,158,11,0.12)" stroke="#F59E0B" strokeWidth="0.8"/>
+        <path d="M5 2.5v3M5 7h.01" stroke="#F59E0B" strokeWidth="1.1" strokeLinecap="round"/>
+      </svg>
+      Still Receiving
+    </div>
+  );
+
+  // "pending" — default
+  return (
+    <div style={{
+      display: "inline-flex", alignItems: "center", gap: "5px",
+      fontSize: "0.68rem", fontWeight: "500", color: "#6B6880",
+      marginTop: "4px",
+    }}>
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+        <circle cx="5" cy="5" r="4.5" fill="rgba(107,104,128,0.1)" stroke="#6B6880" strokeWidth="0.8"/>
+        <path d="M5 3v2.2l1.3 1.3" stroke="#6B6880" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+      Pending Verification
+    </div>
+  );
+}
   return (
     <>
       <style>{S}</style>
@@ -658,45 +709,41 @@ export default function ResultsPage() {
           )}
 
           {/* ══ UNSUBSCRIBED ══ */}
-          {activeTab === "unsub" && (
-            <div className="ulist">
-              {unsubHist.length === 0 ? (
-                <div className="empty">
-                  <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-                    <circle cx="16" cy="16" r="14" stroke="#22C55E" strokeWidth="1.5"/>
-                    <path d="M10 16l4 4 8-8" stroke="#22C55E" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                  <p>No confirmed unsubscriptions yet.</p>
-                </div>
-              ) : (
-                [...unsubHist].reverse().map((item, i) => (
-                  <div className="urow done done-u" key={i}>
-                    <div className="ulet green">{(item.domain?.[0] || "?").toUpperCase()}</div>
-                    <div className="uinfo">
-                      <div className="ufrom">{item.from}</div>
-                      <div className="usubj">{item.email || extractEmail(item.from)}</div>
-                      <div className="umeta">
-                        Unsubscribed on {fmtS(item.at)}
-                        {item.needsVerification && (
-                          <span style={{ color: "#F59E0B" }}> · ⚠ Bulk — please verify manually</span>
-                        )}
-                      </div>
-                      {item.stillReceiving && (
-                        <div className="uwarn">
-                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                            <circle cx="5" cy="5" r="4" stroke="#F59E0B" strokeWidth="1.2"/>
-                            <path d="M5 3v2M5 6.5h.01" stroke="#F59E0B" strokeWidth="1.2" strokeLinecap="round"/>
-                          </svg>
-                          Still receiving — unsubscribe may not have worked
-                        </div>
-                      )}
-                    </div>
-                    <button className="rbtn done-u" disabled>Done ✓</button>
-                  </div>
-                ))
-              )}
+{activeTab === "unsub" && (
+  <div className="ulist">
+    {unsubHist.length === 0 ? (
+      <div className="empty">
+        <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+          <circle cx="16" cy="16" r="14" stroke="#22C55E" strokeWidth="1.5"/>
+          <path d="M10 16l4 4 8-8" stroke="#22C55E" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+        <p>No confirmed unsubscriptions yet.</p>
+      </div>
+    ) : (
+      [...unsubHist].reverse().map((item, i) => {
+        const vstatus = getVerificationStatus(item);
+        return (
+          <div className="urow done done-u" key={i}>
+            <div className="ulet green">{(item.domain?.[0] || "?").toUpperCase()}</div>
+            <div className="uinfo">
+              <div className="ufrom">{item.from}</div>
+              <div className="usubj">{item.email || extractEmail(item.from)}</div>
+              <div className="umeta">
+                Unsubscribed on {fmtS(item.at)}
+                {item.needsVerification && (
+                  <span style={{ color: "#4A4860" }}> · Bulk</span>
+                )}
+              </div>
+              {/* ✅ Status line — always shown, 3 possible states */}
+              <VerificationBadge status={vstatus} />
             </div>
-          )}
+            <button className="rbtn done-u" disabled>Done ✓</button>
+          </div>
+        );
+      })
+    )}
+  </div>
+)}
 
           {/* ══ BLOCKED ══ — only shows entries with confirmed filterId */}
           {activeTab === "blocked" && (
