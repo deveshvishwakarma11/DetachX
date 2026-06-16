@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { updateUnsubVerification } from "./lib/cloudStorage";
 
 const scanStyles = `
   .scan-page {
@@ -385,18 +386,33 @@ async function runGmailScan(token, onProgress, onStatus, onPhase) {
   }
 
   // ── Apply verification results ────────────────────────────────────────────
-  if (Object.keys(verificationMap).length > 0) {
-    const updatedHistory = unsubHistory.map((entry) => {
-      const v = verificationMap[entry.domain];
-      if (!v) return entry;
-      let newStatus = entry.verificationStatus || "pending";
-      if (v.confirmed)       newStatus = "confirmed";
-      else if (v.stillReceiving) newStatus = "still_receiving";
-      return { ...entry, verificationStatus: newStatus };
-    });
-    localStorage.setItem("detachx_unsub_history", JSON.stringify(updatedHistory));
-    console.log("[DetachX] verification results:", verificationMap);
+if (Object.keys(verificationMap).length > 0) {
+  const userEmail = JSON.parse(localStorage.getItem("detachx_user") || "{}").email || "";
+
+  const updatedHistory = unsubHistory.map((entry) => {
+    const v = verificationMap[entry.domain];
+    if (!v) return entry;
+    let newStatus = entry.verificationStatus || "pending";
+    if (v.confirmed)           newStatus = "confirmed";
+    else if (v.stillReceiving) newStatus = "still_receiving";
+    return { ...entry, verificationStatus: newStatus };
+  });
+
+  // ✅ Update localStorage cache
+  localStorage.setItem("detachx_unsub_history", JSON.stringify(updatedHistory));
+
+  // ✅ Sync changed entries to Supabase
+  if (userEmail) {
+    for (const [domain, v] of Object.entries(verificationMap)) {
+      const newStatus = v.confirmed ? "confirmed"
+        : v.stillReceiving ? "still_receiving"
+        : "pending";
+      await updateUnsubVerification(userEmail, domain, newStatus, v.stillReceiving);
+    }
   }
+
+  console.log("[DetachX] verification results:", verificationMap);
+}
 
   onProgress(100);
   onStatus("Scan complete!");

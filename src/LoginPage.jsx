@@ -1,196 +1,112 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useGoogleLogin } from "@react-oauth/google";
+import { supabase } from "./lib/supabase";
 
 const loginStyles = `
   .login-page {
-    position: relative;
-    min-height: 100dvh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 2rem;
-    overflow: hidden;
-    background: #0A0A0F;
+    position: relative; min-height: 100dvh;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 2rem; overflow: hidden; background: #0A0A0F;
   }
   .login-page .bg-x {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    pointer-events: none;
-    z-index: 0;
+    position: absolute; inset: 0; display: flex;
+    align-items: center; justify-content: center;
+    pointer-events: none; z-index: 0;
   }
   .login-page .bg-x svg {
-    width: min(70vw, 600px);
-    height: min(70vw, 600px);
-    opacity: 0.025;
-    animation: pulse-x 6s ease-in-out infinite;
+    width: min(70vw, 600px); height: min(70vw, 600px);
+    opacity: 0.025; animation: pulse-x 6s ease-in-out infinite;
   }
   .login-page::before {
-    content: '';
-    position: absolute;
-    inset: 0;
+    content: ''; position: absolute; inset: 0;
     background: radial-gradient(ellipse 70% 70% at 50% 50%, transparent 30%, #0A0A0F 100%);
-    z-index: 1;
-    pointer-events: none;
+    z-index: 1; pointer-events: none;
   }
   .login-page .top-bar {
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 1px;
+    position: absolute; top: 0; left: 0; right: 0; height: 1px;
     background: linear-gradient(90deg, transparent, #1E1E2A 30%, #6C63FF 50%, #1E1E2A 70%, transparent);
-    z-index: 10;
-    opacity: 0;
-    animation: bar-appear 1.2s ease forwards;
+    z-index: 10; opacity: 0; animation: bar-appear 1.2s ease forwards;
   }
   .back-link {
-    position: absolute;
-    top: 2rem;
-    left: 2rem;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.45rem;
-    font-family: 'Space Grotesk', sans-serif;
-    font-size: 0.8rem;
-    font-weight: 500;
-    letter-spacing: 0.05em;
-    color: #6B6880;
-    background: none;
-    border: none;
-    cursor: pointer;
-    z-index: 10;
-    text-decoration: none;
-    transition: color 0.2s ease;
-    opacity: 0;
+    position: absolute; top: 2rem; left: 2rem;
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    font-family: 'Space Grotesk', sans-serif; font-size: 0.8rem;
+    font-weight: 500; letter-spacing: 0.05em; color: #6B6880;
+    background: none; border: none; cursor: pointer; z-index: 10;
+    transition: color 0.2s ease; opacity: 0;
     animation: fade-up 0.6s ease 0.2s forwards;
   }
   .back-link:hover { color: #F0EEE9; }
   .login-page .wordmark {
-    position: absolute;
-    top: 2rem;
-    font-family: 'Space Grotesk', sans-serif;
-    font-size: 1rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    color: #F0EEE9;
-    z-index: 10;
-    opacity: 0;
-    animation: fade-up 0.7s ease 0.2s forwards;
+    position: absolute; top: 2rem;
+    font-family: 'Space Grotesk', sans-serif; font-size: 1rem;
+    font-weight: 600; letter-spacing: 0.08em; color: #F0EEE9;
+    z-index: 10; opacity: 0; animation: fade-up 0.7s ease 0.2s forwards;
   }
   .login-page .wordmark span { color: #6C63FF; }
   .login-card {
-    position: relative;
-    z-index: 10;
-    width: 100%;
-    max-width: 420px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0;
-    background: #111118;
-    border: 1px solid #1E1E2A;
-    border-radius: 16px;
+    position: relative; z-index: 10; width: 100%; max-width: 420px;
+    display: flex; flex-direction: column; align-items: center;
+    background: #111118; border: 1px solid #1E1E2A; border-radius: 16px;
     padding: 2.75rem 2.5rem 2.5rem;
     box-shadow: 0 0 0 1px rgba(108,99,255,0.06), 0 32px 64px rgba(0,0,0,0.5);
   }
   .login-icon {
-    width: 48px; height: 48px;
-    border-radius: 12px;
-    background: rgba(108,99,255,0.12);
-    border: 1px solid rgba(108,99,255,0.2);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-bottom: 1.5rem;
-    opacity: 0;
-    animation: fade-up 0.6s ease 0.55s forwards;
+    width: 48px; height: 48px; border-radius: 12px;
+    background: rgba(108,99,255,0.12); border: 1px solid rgba(108,99,255,0.2);
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 1.5rem; opacity: 0; animation: fade-up 0.6s ease 0.55s forwards;
   }
   .login-title {
-    font-family: 'Space Grotesk', sans-serif;
-    font-size: 1.6rem;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    color: #F0EEE9;
-    text-align: center;
-    margin-bottom: 0.6rem;
-    opacity: 0;
-    animation: fade-up 0.6s ease 0.7s forwards;
+    font-family: 'Space Grotesk', sans-serif; font-size: 1.6rem;
+    font-weight: 700; letter-spacing: -0.02em; color: #F0EEE9;
+    text-align: center; margin-bottom: 0.6rem;
+    opacity: 0; animation: fade-up 0.6s ease 0.7s forwards;
   }
   .login-subtitle {
-    font-size: 0.9rem;
-    font-weight: 300;
-    line-height: 1.6;
-    color: #6B6880;
-    text-align: center;
-    max-width: 300px;
-    margin-bottom: 2.25rem;
-    opacity: 0;
-    animation: fade-up 0.6s ease 0.85s forwards;
+    font-size: 0.9rem; font-weight: 300; line-height: 1.6;
+    color: #6B6880; text-align: center; max-width: 300px;
+    margin-bottom: 2.25rem; opacity: 0; animation: fade-up 0.6s ease 0.85s forwards;
   }
   .login-divider {
-    width: 100%;
-    height: 1px;
-    background: #1E1E2A;
-    margin-bottom: 2.25rem;
-    opacity: 0;
-    animation: fade-up 0.6s ease 0.9s forwards;
+    width: 100%; height: 1px; background: #1E1E2A;
+    margin-bottom: 2.25rem; opacity: 0; animation: fade-up 0.6s ease 0.9s forwards;
   }
   .google-btn {
-    position: relative;
-    width: 100%;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.75rem;
-    font-family: 'Space Grotesk', sans-serif;
-    font-size: 0.95rem;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    color: #F0EEE9;
-    padding: 0.9rem 1.5rem;
-    border-radius: 8px;
-    border: 1px solid #2A2A38;
-    background: #16161F;
-    cursor: pointer;
-    overflow: hidden;
+    position: relative; width: 100%; display: inline-flex;
+    align-items: center; justify-content: center; gap: 0.75rem;
+    font-family: 'Space Grotesk', sans-serif; font-size: 0.95rem;
+    font-weight: 600; letter-spacing: 0.02em; color: #F0EEE9;
+    padding: 0.9rem 1.5rem; border-radius: 8px; border: 1px solid #2A2A38;
+    background: #16161F; cursor: pointer; overflow: hidden;
     transition: border-color 0.3s ease, background 0.3s ease;
-    opacity: 0;
-    animation: fade-up 0.6s ease 1s forwards;
-    margin-bottom: 1rem;
+    opacity: 0; animation: fade-up 0.6s ease 1s forwards; margin-bottom: 1rem;
   }
   .google-btn::before {
-    content: '';
-    position: absolute;
-    inset: 0;
+    content: ''; position: absolute; inset: 0;
     background: linear-gradient(135deg, rgba(108,99,255,0.08) 0%, transparent 60%);
-    opacity: 0;
-    transition: opacity 0.3s ease;
+    opacity: 0; transition: opacity 0.3s ease;
   }
   .google-btn:hover { border-color: rgba(108,99,255,0.4); background: #1A1A25; }
   .google-btn:hover::before { opacity: 1; }
   .google-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .google-btn svg { flex-shrink: 0; position: relative; z-index: 1; }
   .google-btn span { position: relative; z-index: 1; }
+  .login-error {
+    font-size: 0.78rem; color: #EF4444; text-align: center;
+    background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2);
+    border-radius: 8px; padding: 0.6rem 1rem; margin-bottom: 1rem; width: 100%;
+  }
   .terms-note {
-    font-size: 0.68rem;
-    color: #4A4860;
-    text-align: center;
-    line-height: 1.6;
-    letter-spacing: 0.02em;
-    opacity: 0;
-    animation: fade-up 0.6s ease 1.15s forwards;
+    font-size: 0.68rem; color: #4A4860; text-align: center;
+    line-height: 1.6; letter-spacing: 0.02em;
+    opacity: 0; animation: fade-up 0.6s ease 1.15s forwards;
   }
   .login-page .footer-note {
-    position: absolute;
-    bottom: 2rem;
-    font-size: 0.72rem;
-    color: #6B6880;
-    letter-spacing: 0.05em;
-    z-index: 10;
-    opacity: 0;
-    animation: fade-up 0.7s ease 1.3s forwards;
+    position: absolute; bottom: 2rem; font-size: 0.72rem;
+    color: #6B6880; letter-spacing: 0.05em; z-index: 10;
+    opacity: 0; animation: fade-up 0.7s ease 1.3s forwards;
   }
   @keyframes pulse-x {
     0%, 100% { opacity: 0.025; transform: scale(1); }
@@ -201,9 +117,7 @@ const loginStyles = `
     from { opacity: 0; transform: translateY(18px); }
     to   { opacity: 1; transform: translateY(0); }
   }
-  @media (max-width: 480px) {
-    .login-card { padding: 2rem 1.5rem; }
-  }
+  @media (max-width: 480px) { .login-card { padding: 2rem 1.5rem; } }
 `;
 
 function GoogleIcon() {
@@ -218,41 +132,38 @@ function GoogleIcon() {
 }
 
 export default function LoginPage() {
-  const navigate  = useNavigate();
+  const navigate   = useNavigate();
+  const [loading,  setLoading]  = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
-  // ✅ Request BOTH scopes at login — no second OAuth popup ever
-  const login = useGoogleLogin({
-    scope: [
-"https://www.googleapis.com/auth/userinfo.profile",
-  "https://www.googleapis.com/auth/userinfo.email",
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/gmail.settings.basic",            
-    ].join(" "),
-
-    onSuccess: async (tokenResponse) => {
-      try {
-        // Save token immediately
-        localStorage.setItem("gmail_token", tokenResponse.access_token);
-
-        // Fetch user profile
-        const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-          headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
-        });
-        const userInfo = await res.json();
-
-        localStorage.setItem("detachx_user", JSON.stringify({
-          name:    userInfo.name,
-          email:   userInfo.email,
-          picture: userInfo.picture,
-        }));
-
-        navigate("/dashboard");
-      } catch (err) {
-        console.error("Login error:", err);
-      }
-    },
-    onError: () => console.error("Google login failed"),
-  });
+  const handleGoogleLogin = async () => {
+    setLoading(true);
+    setErrorMsg("");
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          // ✅ Request Gmail readonly scope in addition to default scopes
+          scopes: [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.settings.basic",
+          ].join(" "),
+        
+         redirectTo:"http://localhost:5173",
+          queryParams: {
+            access_type: "offline",
+            prompt:      "consent",
+          },
+        },
+      });
+      if (error) throw error;
+      // Supabase redirects to Google — no navigate needed here
+    } catch (err) {
+      console.error("[DetachX] login error:", err);
+      setErrorMsg("Login failed. Please try again.");
+      setLoading(false);
+    }
+  };
 
   return (
     <>
@@ -281,9 +192,14 @@ export default function LoginPage() {
           <h1 className="login-title">Welcome to DetachX</h1>
           <p className="login-subtitle">Connect your Gmail account to scan your digital footprint.</p>
           <div className="login-divider" />
-          <button className="google-btn" onClick={() => login()}>
+          {errorMsg && <div className="login-error">{errorMsg}</div>}
+          <button
+            className="google-btn"
+            onClick={handleGoogleLogin}
+            disabled={loading}
+          >
             <GoogleIcon />
-            <span>Continue with Google</span>
+            <span>{loading ? "Redirecting…" : "Continue with Google"}</span>
           </button>
           <p className="terms-note">
             By continuing, you agree to our Terms of Service<br />and Privacy Policy.

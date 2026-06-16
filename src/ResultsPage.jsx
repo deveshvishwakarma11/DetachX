@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import { saveUnsubEntry, saveBlockEntry } from "./lib/cloudStorage";
 
 const S = `
   * { box-sizing: border-box; }
@@ -338,7 +339,7 @@ export default function ResultsPage() {
     setModal({ open: true, type: "unsub-verify", item, processing: false });
   }, []);
 
-  const confirmUnsubSuccess = useCallback((item) => {
+  const confirmUnsubSuccess = useCallback(async(item) => {
   const entry = {
     domain:   item.domain,
     from:     item.from,
@@ -354,6 +355,8 @@ export default function ResultsPage() {
   const upd = [...unsubHist, entry];
   setUnsubHist(upd);
   saveUnsub(upd);
+  await saveUnsubEntry(user?.email, entry);
+
   setSelected((p) => { const n = new Set(p); n.delete(item.domain); return n; });
   setModal({ open: false, type: null, item: null, processing: false });
   toast(`${item.domain} unsubscribed — verifying on next scan`, "success");
@@ -380,7 +383,7 @@ export default function ResultsPage() {
     setModal({ open: true, type: "unsub-bulk", item: null, processing: false });
   };
 
-  const confirmBulk = useCallback(() => {
+  const confirmBulk = useCallback(async() => {
     if (!result) return;
     const toProc = result.unsubList.filter(
       (i) => selected.has(i.domain) && i.unsubUrl && !handledDomains.has(i.domain)
@@ -403,6 +406,9 @@ export default function ResultsPage() {
     const upd = [...unsubHist, ...entries];
     setUnsubHist(upd);
     saveUnsub(upd);
+    for (const entry of entries) {
+  await saveUnsubEntry(user?.email, entry);
+}
     setSelected(new Set());
     setModal({ open: false, type: null, item: null, processing: false });
     toast(`${toProc.length} pages opened — verify each one manually`, "info", 5000);
@@ -448,7 +454,8 @@ export default function ResultsPage() {
       const upd = [...blockHist, entry];
       setBlockHist(upd);
       saveBlock(upd);
-
+      await saveBlockEntry(user?.email, entry);
+      
       setModal({ open: false, type: null, item: null, processing: false });
       toast(`${item.domain} blocked ✓ — Gmail filter ID: ${filterResult.id}`, "success", 5000);
 
