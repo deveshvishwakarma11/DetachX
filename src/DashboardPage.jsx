@@ -66,6 +66,13 @@ const dashStyles = `
   }
   .sync-note.syncing { color: #6C63FF; }
   .sync-note.done    { color: #22C55E; }
+  .sync-note.error   { color: #EF4444; }
+  .token-warn {
+    font-size: 0.72rem; color: #F59E0B; text-align: center;
+    background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.2);
+    border-radius: 8px; padding: 0.5rem 0.85rem; margin-bottom: 1rem;
+    width: 100%;
+  }
   .scan-btn {
     position: relative; width: 100%; display: inline-flex;
     align-items: center; justify-content: center; gap: 0.6rem;
@@ -100,76 +107,160 @@ const dashStyles = `
   @media (max-width: 480px) { .dash-card { padding: 2rem 1.5rem; } }
 `;
 
+// ── Token helpers ─────────────────────────────────────────────────────────────
+
+// Check if a token is within 5 minutes of expiry or already expired
+function isTokenExpiredOrExpiring(session) {
+  if (!session?.expires_at) return true;
+  const expiresAt  = session.expires_at * 1000; // seconds → ms
+  const now        = Date.now();
+  const fiveMinMs  = 5 * 60 * 1000;
+  return now >= expiresAt - fiveMinMs;
+}
+
+// ✅ Get a fresh token — refresh if needed
+async function getFreshGmailToken() {
+  try {
+    // Ask Supabase for current session
+    const { data, error } = await supabase.auth.getSession();
+    if (error || !data.session) {
+      console.warn("[DetachX] getFreshGmailToken: no session");
+      return null;
+    }
+
+    let session = data.session;
+
+    // If token is expired or expiring soon — refresh it
+    if (isTokenExpiredOrExpiring(session)) {
+      console.log("[DetachX] token expiring — refreshing session");
+      const { data: refreshed, error: refreshError } =
+        await supabase.auth.refreshSession();
+      if (refreshError || !refreshed.session) {
+        console.error("[DetachX] session refresh failed:", refreshError?.message);
+        return null;
+      }
+      session = refreshed.session;
+    }
+
+    const token = session.provider_token;
+    if (!token) {
+      console.warn("[DetachX] provider_token missing from session");
+      return null;
+    }
+
+    // ✅ Always update localStorage with latest token
+    localStorage.setItem("gmail_token", token);
+    console.log("[DetachX] getFreshGmailToken → token saved, expires_at:",
+      new Date(session.expires_at * 1000).toLocaleTimeString());
+    return token;
+  } catch (err) {
+    console.error("[DetachX] getFreshGmailToken error:", err);
+    return null;
+  }
+}
+
 export default function DashboardPage({ session }) {
-  const navigate      = useNavigate();
-  const [syncState,   setSyncState]   = useState("syncing"); // "syncing" | "done" | "error"
-  const [syncMsg,     setSyncMsg]     = useState("Loading your history…");
+  const navigate   = useNavigate();
+  const [syncState, setSyncState] = useState("syncing");
+  const [syncMsg,   setSyncMsg]   = useState("Loading your history…");
+  const [tokenOk,   setTokenOk]   = useState(true); // ✅ track token health
 
-  const user = session?.user;
+  const user      = session?.user;
   const userEmail = user?.email || "";
-  const userName  = user?.user_metadata?.full_name || user?.user_metadata?.name || "User";
-  const userPic   = user?.user_metadata?.avatar_url || user?.user_metadata?.picture || "";
-
-  // ✅ Save gmail_token from Supabase session for Gmail API calls
-  const gmailToken = session?.provider_token || "";
+  const userName  = user?.user_metadata?.full_name
+                 || user?.user_metadata?.name
+                 || "User";
+  const userPic   = user?.user_metadata?.avatar_url
+                 || user?.user_metadata?.picture
+                 || "";
 
   useEffect(() => {
     if (!userEmail) return;
-
-    async function initCloudHistory() {
-      setSyncState("syncing");
-      setSyncMsg("Loading your history…");
-
-      try {
-        // Step 1: Migrate old localStorage data if not done yet
-        const alreadyMigrated = localStorage.getItem("detachx_migrated");
-        if (!alreadyMigrated) {
-          setSyncMsg("Migrating local data to cloud…");
-          await migrateFromLocalStorage(userEmail);
-        }
-
-        // Step 2: Load from Supabase
-        setSyncMsg("Syncing from cloud…");
-        const [cloudUnsub, cloudBlock] = await Promise.all([
-          loadUnsubHistory(userEmail),
-          loadBlockHistory(userEmail),
-        ]);
-
-        // Step 3: Write to localStorage as cache for scan/results pages
-        localStorage.setItem("detachx_unsub_history", JSON.stringify(cloudUnsub));
-        localStorage.setItem("detachx_block_history", JSON.stringify(cloudBlock));
-
-        // Step 4: Save session info for other pages
-        localStorage.setItem("detachx_user", JSON.stringify({
-          name:    userName,
-          email:   userEmail,
-          picture: userPic,
-        }));
-        localStorage.setItem("gmail_token", gmailToken);
-
-        setSyncState("done");
-        setSyncMsg(`Synced — ${cloudUnsub.length} unsubscribed, ${cloudBlock.length} blocked`);
-        console.log("[DetachX] cloud sync done:", { unsub: cloudUnsub.length, block: cloudBlock.length });
-      } catch (err) {
-        console.error("[DetachX] cloud sync error:", err);
-        setSyncState("error");
-        setSyncMsg("Cloud sync failed — using local data");
-      }
-    }
-
-    initCloudHistory();
+    initDashboard();
   }, [userEmail]);
 
-  const handleScan = () => {
-    const token = localStorage.getItem("gmail_token");
-    if (!token) { navigate("/login"); return; }
+  async function initDashboard() {
+    setSyncState("syncing");
+    setSyncMsg("Loading your history…");
+
+    try {
+      // ── Step 1: Get fresh Gmail token ─────────────────────────────────────
+      setSyncMsg("Verifying Gmail access…");
+      const freshToken = await getFreshGmailToken();
+
+      if (!freshToken) {
+        // provider_token missing — this happens when user logs in
+        // from a different device/browser where token wasn't issued
+        setTokenOk(false);
+        console.warn("[DetachX] No Gmail token — user needs to re-login");
+      } else {
+        setTokenOk(true);
+      }
+
+      // Save user info regardless
+      localStorage.setItem("detachx_user", JSON.stringify({
+        name:    userName,
+        email:   userEmail,
+        picture: userPic,
+      }));
+
+      // ── Step 2: Migration ──────────────────────────────────────────────────
+      const alreadyMigrated = localStorage.getItem("detachx_migrated");
+      if (!alreadyMigrated) {
+        setSyncMsg("Migrating local data to cloud…");
+        await migrateFromLocalStorage(userEmail);
+      }
+
+      // ── Step 3: Load from Supabase ─────────────────────────────────────────
+      setSyncMsg("Syncing from cloud…");
+      const [cloudUnsub, cloudBlock] = await Promise.all([
+        loadUnsubHistory(userEmail),
+        loadBlockHistory(userEmail),
+      ]);
+
+      // Write to localStorage as cache
+      localStorage.setItem("detachx_unsub_history", JSON.stringify(cloudUnsub));
+      localStorage.setItem("detachx_block_history", JSON.stringify(cloudBlock));
+
+      setSyncState("done");
+      setSyncMsg(
+        `Synced — ${cloudUnsub.length} unsubscribed, ${cloudBlock.length} blocked`
+      );
+      console.log("[DetachX] dashboard ready:", {
+        unsub: cloudUnsub.length,
+        block: cloudBlock.length,
+        tokenOk: !!freshToken,
+      });
+    } catch (err) {
+      console.error("[DetachX] dashboard init error:", err);
+      setSyncState("error");
+      setSyncMsg("Cloud sync failed — using local data");
+    }
+  }
+
+  // ✅ Refresh token right before scan
+  const handleScan = async () => {
+    setSyncState("syncing");
+    setSyncMsg("Refreshing Gmail access…");
+
+    const freshToken = await getFreshGmailToken();
+    if (!freshToken) {
+      // Token unrecoverable — need fresh login
+      await supabase.auth.signOut();
+      localStorage.removeItem("detachx_user");
+      localStorage.removeItem("gmail_token");
+      localStorage.removeItem("scan_result");
+      navigate("/login");
+      return;
+    }
+
+    setSyncState("done");
+    setSyncMsg("Ready");
     navigate("/scan");
   };
 
   const handleLogout = async () => {
-    // ✅ Sign out from Supabase — session cleared
     await supabase.auth.signOut();
-    // Clear session-only keys — histories stay for migration next time
     localStorage.removeItem("detachx_user");
     localStorage.removeItem("gmail_token");
     localStorage.removeItem("scan_result");
@@ -220,6 +311,13 @@ export default function DashboardPage({ session }) {
             )}
             {syncMsg}
           </div>
+
+          {/* ✅ Token warning — shown only if token missing */}
+          {!tokenOk && (
+            <div className="token-warn">
+              ⚠ Gmail access expired — you'll be asked to log in again before scanning
+            </div>
+          )}
 
           <div className="dash-divider" />
 

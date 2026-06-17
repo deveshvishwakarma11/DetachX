@@ -55,17 +55,28 @@ const scanStyles = `
     0%   { transform: scale(0.6); opacity: 0.8; }
     100% { transform: scale(1.8); opacity: 0; }
   }
-  .scan-title { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.02em; color: #F0EEE9; margin: 0; }
+  .scan-title {
+    font-size: 1.4rem; font-weight: 700;
+    letter-spacing: -0.02em; color: #F0EEE9; margin: 0;
+  }
   .scan-status { font-size: 0.85rem; color: #6B6880; margin: 0; min-height: 1.4em; }
   .scan-phase {
     font-size: 0.72rem; color: #4A4860; background: #111118;
     border: 1px solid #1E1E2A; border-radius: 99px;
     padding: 0.25rem 0.85rem; letter-spacing: 0.04em;
   }
-  .progress-wrap { width: 280px; height: 3px; background: #1E1E2A; border-radius: 99px; overflow: hidden; }
+  .scan-counter {
+    font-size: 0.78rem; color: #6C63FF; font-weight: 600;
+    background: rgba(108,99,255,0.08); border: 1px solid rgba(108,99,255,0.2);
+    border-radius: 99px; padding: 0.3rem 1rem; letter-spacing: 0.02em;
+  }
+  .progress-wrap {
+    width: 280px; height: 3px; background: #1E1E2A;
+    border-radius: 99px; overflow: hidden;
+  }
   .progress-bar {
     height: 100%; background: linear-gradient(90deg, #6C63FF, #A78BFA);
-    border-radius: 99px; transition: width 0.5s ease;
+    border-radius: 99px; transition: width 0.4s ease;
   }
   .scan-error {
     color: #EF4444; font-size: 0.85rem; background: rgba(239,68,68,0.08);
@@ -89,6 +100,13 @@ const scanStyles = `
   }
 `;
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+const MAX_EMAILS  = 5000; // ✅ Goal 1 — removed 500 limit
+const PAGE_SIZE   = 50;   // Gmail API max per request
+const META_CHUNK  = 10;   // Parallel metadata fetches
+const BODY_CHUNK  = 5;    // Parallel body fetches (heavier)
+
+// ── Classification signals ────────────────────────────────────────────────────
 const NEWSLETTER_SIGNALS = [
   "newsletter","digest","weekly","monthly","daily update",
   "roundup","bulletin","dispatch","briefing","subscription",
@@ -135,14 +153,15 @@ const UNSUB_CONFIRMED_SIGNALS = [
   "we have removed you",
 ];
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function classify(from, subject, snippet) {
-  const src = `${from} ${subject} ${snippet}`.toLowerCase();
-  const isNewsletter       = NEWSLETTER_SIGNALS.some((s) => src.includes(s));
-  const isPromo            = !isNewsletter && PROMO_SIGNALS.some((s) => src.includes(s));
-  const hasUnsub           = src.includes("unsubscribe");
-  const isKnownMarketer    = KNOWN_MARKETING_DOMAINS.some((d) => from.toLowerCase().includes(d));
-  const isUnsubConfirmation = UNSUB_CONFIRMED_SIGNALS.some((s) => src.includes(s));
-  return { isNewsletter, isPromo, hasUnsub, isKnownMarketer, isUnsubConfirmation };
+  const src             = `${from} ${subject} ${snippet}`.toLowerCase();
+  const isNewsletter    = NEWSLETTER_SIGNALS.some((s) => src.includes(s));
+  const isPromo         = !isNewsletter && PROMO_SIGNALS.some((s) => src.includes(s));
+  const hasUnsub        = src.includes("unsubscribe");
+  const isKnownMarketer = KNOWN_MARKETING_DOMAINS.some((d) => from.toLowerCase().includes(d));
+  const isUnsubConfirm  = UNSUB_CONFIRMED_SIGNALS.some((s) => src.includes(s));
+  return { isNewsletter, isPromo, hasUnsub, isKnownMarketer, isUnsubConfirm };
 }
 
 function extractUnsubUrlFromHeader(headerValue) {
@@ -164,7 +183,10 @@ function decodeBase64(data) {
   try {
     const fixed = data.replace(/-/g, "+").replace(/_/g, "/");
     return decodeURIComponent(
-      atob(fixed).split("").map((c) => "%" + c.charCodeAt(0).toString(16).padStart(2, "0")).join("")
+      atob(fixed)
+        .split("")
+        .map((c) => "%" + c.charCodeAt(0).toString(16).padStart(2, "0"))
+        .join("")
     );
   } catch { return ""; }
 }
@@ -183,17 +205,22 @@ function extractBodyParts(payload) {
 function extractUnsubUrlFromBody(html) {
   if (!html) return null;
   const re = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-  let m; const cands = [];
+  let m;
+  const cands = [];
   while ((m = re.exec(html)) !== null) {
     const href = m[1];
     const text = m[2].replace(/<[^>]+>/g, "").toLowerCase().trim();
     const low  = href.toLowerCase();
-    if (href.startsWith("#") || href.startsWith("javascript") ||
-        low.includes("track") || low.includes("pixel")) continue;
+    if (
+      href.startsWith("#") ||
+      href.startsWith("javascript") ||
+      low.includes("track") ||
+      low.includes("pixel")
+    ) continue;
     const score = BODY_UNSUB_KEYWORDS.reduce((a, kw) => {
-      if (text.includes(kw)) return a + 2;
-      if (low.includes(kw.replace(/ /g, "-"))) return a + 1;
-      if (low.includes(kw.replace(/ /g, "")))  return a + 1;
+      if (text.includes(kw))                         return a + 2;
+      if (low.includes(kw.replace(/ /g, "-")))       return a + 1;
+      if (low.includes(kw.replace(/ /g, "")))        return a + 1;
       return a;
     }, 0);
     if (score > 0) cands.push({ href, score });
@@ -217,7 +244,9 @@ function extractUnsubUrlFromText(text) {
 }
 
 async function gmailFetch(url, token) {
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   if (res.status === 401) throw new Error("TOKEN_EXPIRED");
   if (!res.ok)            throw new Error(`API_ERROR_${res.status}`);
   return res.json();
@@ -226,31 +255,48 @@ async function gmailFetch(url, token) {
 async function fetchBodyUnsubUrl(messageId, token) {
   try {
     const msg   = await gmailFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`, token
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`,
+      token
     );
     const parts = extractBodyParts(msg.payload);
     const html  = parts.find((p) => p.mimeType === "text/html");
     const txt   = parts.find((p) => p.mimeType === "text/plain");
-    if (html) { const u = extractUnsubUrlFromBody(decodeBase64(html.data)); if (u) return u; }
-    if (txt)  { const u = extractUnsubUrlFromText(decodeBase64(txt.data));  if (u) return u; }
+    if (html) {
+      const u = extractUnsubUrlFromBody(decodeBase64(html.data));
+      if (u) return u;
+    }
+    if (txt) {
+      const u = extractUnsubUrlFromText(decodeBase64(txt.data));
+      if (u) return u;
+    }
     return null;
   } catch { return null; }
 }
 
 function loadExcludedDomains() {
   const set = new Set();
-  try { JSON.parse(localStorage.getItem("detachx_unsub_history") || "[]").forEach((h) => set.add(h.domain)); } catch {}
-  try { JSON.parse(localStorage.getItem("detachx_block_history") || "[]").forEach((h) => set.add(h.domain)); } catch {}
+  try {
+    JSON.parse(localStorage.getItem("detachx_unsub_history") || "[]")
+      .forEach((h) => set.add(h.domain));
+  } catch {}
+  try {
+    JSON.parse(localStorage.getItem("detachx_block_history") || "[]")
+      .forEach((h) => set.add(h.domain));
+  } catch {}
   return set;
 }
 
-async function runGmailScan(token, onProgress, onStatus, onPhase) {
+// ── Main scan function ────────────────────────────────────────────────────────
+async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
   const excluded = loadExcludedDomains();
 
+  // Load unsub history for verification
   let unsubHistory = [];
-  try { unsubHistory = JSON.parse(localStorage.getItem("detachx_unsub_history") || "[]"); } catch {}
+  try {
+    unsubHistory = JSON.parse(localStorage.getItem("detachx_unsub_history") || "[]");
+  } catch {}
 
-  // Only verify domains that are not already confirmed
+  // Only verify domains not yet confirmed
   const unsubDomainMap = {};
   unsubHistory.forEach((h) => {
     if ((h.verificationStatus || "pending") !== "confirmed") {
@@ -259,40 +305,70 @@ async function runGmailScan(token, onProgress, onStatus, onPhase) {
   });
   const unsubDomainsToVerify = new Set(Object.keys(unsubDomainMap));
 
-  onPhase("Pass 1 of 2 — Metadata scan");
+  // ════════════════════════════════════════════════════════
+  // PHASE 1 — Paginated ID fetch (Goal 1)
+  // ════════════════════════════════════════════════════════
+  onPhase("Phase 1 — Fetching email list");
   onStatus("Connecting to Gmail…");
-  onProgress(3);
+  onProgress(2);
 
-  const MAX = 500, BATCH = 50;
-  let pageToken = null, allIds = [];
-  while (allIds.length < MAX) {
-    const params = new URLSearchParams({ maxResults: BATCH });
+  let pageToken = null;
+  let allIds    = [];
+
+  // ✅ Goal 1: paginate until no nextPageToken OR MAX_EMAILS reached
+  while (allIds.length < MAX_EMAILS) {
+    const params = new URLSearchParams({ maxResults: PAGE_SIZE });
     if (pageToken) params.set("pageToken", pageToken);
+
     const data = await gmailFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`, token
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`,
+      token
     );
+
     if (!data.messages?.length) break;
-    allIds = allIds.concat(data.messages.map((m) => m.id));
-    pageToken = data.nextPageToken;
-    if (!pageToken) break;
+
+    allIds     = allIds.concat(data.messages.map((m) => m.id));
+    pageToken  = data.nextPageToken;
+
+    // ✅ Goal 1: live counter during pagination
+    onCounter(`${allIds.length.toLocaleString()} emails loaded`);
+    onStatus(`Fetching emails… ${allIds.length.toLocaleString()} loaded`);
+
+    if (!pageToken) break; // No more pages
   }
 
-  onStatus(`Found ${allIds.length} emails. Reading metadata…`);
-  onProgress(10);
+  const total = allIds.length;
+  onCounter(`${total.toLocaleString()} emails found`);
+  onStatus(`Found ${total.toLocaleString()} emails. Reading metadata…`);
+  onProgress(8);
+
+  // ════════════════════════════════════════════════════════
+  // PHASE 2 — Metadata scan + frequency tracking (Goals 2 & 3)
+  // ════════════════════════════════════════════════════════
+  onPhase("Phase 2 — Analysing senders");
 
   let promos = 0, newsletters = 0;
-  const candidateMap   = {};
-  const verificationMap = {};
-  const CHUNK = 10, total = allIds.length;
 
-  for (let i = 0; i < total; i += CHUNK) {
-    const chunk   = allIds.slice(i, i + CHUNK);
+  // candidateMap: domain → candidate data
+  const candidateMap = {};
+
+  // ✅ Goal 2: frequency map — domain → { count, firstReceived, lastReceived }
+  const frequencyMap = {};
+
+  // Verification tracking
+  const verificationMap = {};
+
+  for (let i = 0; i < total; i += META_CHUNK) {
+    const chunk   = allIds.slice(i, i + META_CHUNK);
     const details = await Promise.all(
       chunk.map((id) =>
         gmailFetch(
           `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}` +
-          `?format=metadata&metadataHeaders=From&metadataHeaders=Subject` +
-          `&metadataHeaders=List-Unsubscribe&metadataHeaders=Date`,
+          `?format=metadata` +
+          `&metadataHeaders=From` +
+          `&metadataHeaders=Subject` +
+          `&metadataHeaders=List-Unsubscribe` +
+          `&metadataHeaders=Date`,
           token
         )
       )
@@ -303,32 +379,50 @@ async function runGmailScan(token, onProgress, onStatus, onPhase) {
       const from      = headers.find((h) => h.name === "From")?.value             || "";
       const subject   = headers.find((h) => h.name === "Subject")?.value          || "";
       const listUnsub = headers.find((h) => h.name === "List-Unsubscribe")?.value || "";
-
-    console.log("FROM:",from);
-    console.log("LIST_UNSUB:",listUnsub);
-
       const dateHdr   = headers.find((h) => h.name === "Date")?.value             || "";
       const snippet   = msg.snippet || "";
       const domain    = from.match(/@([\w.-]+)/)?.[1] || "";
+      const emailDate = dateHdr ? new Date(dateHdr) : null;
 
-      const { isNewsletter, isPromo, hasUnsub, isKnownMarketer, isUnsubConfirmation } =
-        classify(from, subject, snippet);
+      const {
+        isNewsletter, isPromo, hasUnsub, isKnownMarketer, isUnsubConfirm,
+      } = classify(from, subject, snippet);
 
       if (isNewsletter) newsletters++;
       if (isPromo)      promos++;
 
-      // ── Verification check ────────────────────────────────────────────────
+      // ✅ Goal 2: frequency tracking for ALL marketing/unsub senders
+      const isMarketingEmail =
+        isNewsletter || isPromo || hasUnsub || isKnownMarketer;
+
+      if (domain && isMarketingEmail) {
+        if (!frequencyMap[domain]) {
+          frequencyMap[domain] = { count: 0, firstReceived: null, lastReceived: null };
+        }
+        frequencyMap[domain].count++;
+
+        if (emailDate) {
+          const fd = frequencyMap[domain];
+          if (!fd.firstReceived || emailDate < new Date(fd.firstReceived)) {
+            fd.firstReceived = emailDate.toISOString();
+          }
+          if (!fd.lastReceived || emailDate > new Date(fd.lastReceived)) {
+            fd.lastReceived = emailDate.toISOString();
+          }
+        }
+      }
+
+      // ── Verification check ─────────────────────────────────────────────────
       if (domain && unsubDomainsToVerify.has(domain)) {
-        const histEntry = unsubDomainMap[domain];
-        const unsubAt   = histEntry?.at ? new Date(histEntry.at) : null;
-        const emailDate = dateHdr ? new Date(dateHdr) : null;
+        const histEntry    = unsubDomainMap[domain];
+        const unsubAt      = histEntry?.at ? new Date(histEntry.at) : null;
         const isAfterUnsub = unsubAt && emailDate && emailDate > unsubAt;
 
         if (isAfterUnsub) {
           if (!verificationMap[domain]) {
             verificationMap[domain] = { stillReceiving: false, confirmed: false };
           }
-          if (isUnsubConfirmation) {
+          if (isUnsubConfirm) {
             verificationMap[domain].confirmed = true;
           } else if (isNewsletter || isPromo || isKnownMarketer || hasUnsub) {
             verificationMap[domain].stillReceiving = true;
@@ -336,113 +430,184 @@ async function runGmailScan(token, onProgress, onStatus, onPhase) {
         }
       }
 
-      // ── Active candidates ─────────────────────────────────────────────────
+      // ── Active candidate detection ─────────────────────────────────────────
       const headerUrl   = extractUnsubUrlFromHeader(listUnsub);
       const isCandidate = hasUnsub || listUnsub || isKnownMarketer || isNewsletter || isPromo;
 
       if (isCandidate && domain && !excluded.has(domain)) {
         if (!candidateMap[domain]) {
           candidateMap[domain] = {
-            from, subject, domain,
+            from,
+            subject,
+            domain,
             unsubUrl:  headerUrl,
             messageId: msg.id,
             needsBody: !headerUrl,
           };
         } else if (!candidateMap[domain].unsubUrl && headerUrl) {
+          // Better URL found for existing candidate
           candidateMap[domain].unsubUrl  = headerUrl;
           candidateMap[domain].needsBody = false;
         }
       }
     }
 
-    const pct = 10 + Math.round(((i + CHUNK) / total) * 40);
-    onProgress(Math.min(50, pct));
-    onStatus(`Reading metadata… ${Math.min(i + CHUNK, total)} / ${total}`);
+    // ✅ Progress: phase 2 takes 8% → 55%
+    const pct = 8 + Math.round(((i + META_CHUNK) / total) * 47);
+    onProgress(Math.min(55, pct));
+    onStatus(`Analysing senders… ${Math.min(i + META_CHUNK, total).toLocaleString()} / ${total.toLocaleString()}`);
+    onCounter(`${Object.keys(candidateMap).length} candidates found`);
   }
 
-  // Pass 2 — body scan
+  // ════════════════════════════════════════════════════════
+  // PHASE 3 — Deep body scan for candidates without header URL
+  // ════════════════════════════════════════════════════════
   const needsBody = Object.values(candidateMap).filter((c) => c.needsBody);
-  onPhase("Pass 2 of 2 — Deep body scan");
+
+  onPhase("Phase 3 — Deep body scan");
+
   if (needsBody.length > 0) {
-    onStatus(`Deep scanning ${needsBody.length} senders…`);
-    onProgress(52);
-    const BC = 5;
-    for (let i = 0; i < needsBody.length; i += BC) {
-      const chunk = needsBody.slice(i, i + BC);
-      const urls  = await Promise.all(chunk.map((c) => fetchBodyUnsubUrl(c.messageId, token)));
+    onStatus(`Deep scanning ${needsBody.length} senders for unsub links…`);
+    onProgress(57);
+    onCounter(`${needsBody.length} senders need deep scan`);
+
+    for (let i = 0; i < needsBody.length; i += BODY_CHUNK) {
+      const chunk = needsBody.slice(i, i + BODY_CHUNK);
+      const urls  = await Promise.all(
+        chunk.map((c) => fetchBodyUnsubUrl(c.messageId, token))
+      );
       chunk.forEach((c, idx) => {
         if (urls[idx]) {
           candidateMap[c.domain].unsubUrl  = urls[idx];
           candidateMap[c.domain].needsBody = false;
         }
       });
-      onProgress(Math.min(90, 52 + Math.round(((i + BC) / needsBody.length) * 38)));
-      onStatus(`Deep scanning… ${Math.min(i + BC, needsBody.length)} / ${needsBody.length}`);
+      const pct = 57 + Math.round(((i + BODY_CHUNK) / needsBody.length) * 33);
+      onProgress(Math.min(90, pct));
+      onStatus(
+        `Deep scanning… ${Math.min(i + BODY_CHUNK, needsBody.length)} / ${needsBody.length}`
+      );
     }
   } else {
     onProgress(90);
-    onStatus("Header links found — skipping body scan.");
+    onStatus("All candidates have header links — skipping body scan.");
     await new Promise((r) => setTimeout(r, 300));
   }
 
-  // ── Apply verification results ────────────────────────────────────────────
-if (Object.keys(verificationMap).length > 0) {
+  // ════════════════════════════════════════════════════════
+  // PHASE 4 — Apply verification results
+  // ════════════════════════════════════════════════════════
+  onPhase("Phase 4 — Finalising");
+  onStatus("Applying verification results…");
+  onProgress(92);
+
   const userEmail = JSON.parse(localStorage.getItem("detachx_user") || "{}").email || "";
 
-  const updatedHistory = unsubHistory.map((entry) => {
-    const v = verificationMap[entry.domain];
-    if (!v) return entry;
-    let newStatus = entry.verificationStatus || "pending";
-    if (v.confirmed)           newStatus = "confirmed";
-    else if (v.stillReceiving) newStatus = "still_receiving";
-    return { ...entry, verificationStatus: newStatus };
-  });
+  if (Object.keys(verificationMap).length > 0) {
+    const updatedHistory = unsubHistory.map((entry) => {
+      const v = verificationMap[entry.domain];
+      if (!v) return entry;
+      let newStatus = entry.verificationStatus || "pending";
+      if (v.confirmed)           newStatus = "confirmed";
+      else if (v.stillReceiving) newStatus = "still_receiving";
+      return { ...entry, verificationStatus: newStatus };
+    });
 
-  // ✅ Update localStorage cache
-  localStorage.setItem("detachx_unsub_history", JSON.stringify(updatedHistory));
+    localStorage.setItem("detachx_unsub_history", JSON.stringify(updatedHistory));
 
-  // ✅ Sync changed entries to Supabase
-  if (userEmail) {
-    for (const [domain, v] of Object.entries(verificationMap)) {
-      const newStatus = v.confirmed ? "confirmed"
-        : v.stillReceiving ? "still_receiving"
-        : "pending";
-      await updateUnsubVerification(userEmail, domain, newStatus, v.stillReceiving);
+    // Sync to Supabase
+    if (userEmail) {
+      for (const [domain, v] of Object.entries(verificationMap)) {
+        const newStatus = v.confirmed
+          ? "confirmed"
+          : v.stillReceiving
+          ? "still_receiving"
+          : "pending";
+        await updateUnsubVerification(userEmail, domain, newStatus, v.stillReceiving);
+      }
     }
+    console.log("[DetachX] verification results:", verificationMap);
   }
 
-  console.log("[DetachX] verification results:", verificationMap);
-}
+  // ════════════════════════════════════════════════════════
+  // PHASE 5 — Build enriched + sorted result (Goals 3 & 4)
+  // ════════════════════════════════════════════════════════
+  onStatus("Building results…");
+  onProgress(96);
+
+  // ✅ Goal 3: Enrich each candidate with frequency data
+  const unsubList = Object.values(candidateMap).map((candidate) => {
+    const freq = frequencyMap[candidate.domain] || {};
+    return {
+      from:          candidate.from,
+      subject:       candidate.subject,
+      domain:        candidate.domain,
+      unsubUrl:      candidate.unsubUrl || null,
+      // ✅ Goal 3: new enriched fields
+      emailCount:    freq.count         || 1,
+      lastReceived:  freq.lastReceived  || null,
+      firstReceived: freq.firstReceived || null,
+    };
+  });
+
+  // ✅ Goal 4: Sort by emailCount descending — highest volume first
+  unsubList.sort((a, b) => b.emailCount - a.emailCount);
+
+  // Cap at 100 results (sorted by frequency — most annoying first)
+  const finalList = unsubList.slice(0, 100);
 
   onProgress(100);
   onStatus("Scan complete!");
+  onCounter(`${finalList.length} senders found`);
 
-  const unsubList = Object.values(candidateMap).slice(0, 80);
+  console.log("[DetachX] scan complete:", {
+    total,
+    candidates: finalList.length,
+    topSender:  finalList[0]?.domain,
+    topCount:   finalList[0]?.emailCount,
+  });
+
   return {
-    total, promos, newsletters,
-    unsubCount: unsubList.length,
-    unsubList,
-    scannedAt: new Date().toISOString(),
-    userEmail: JSON.parse(localStorage.getItem("detachx_user") || "{}").email || "",
+    total,
+    promos,
+    newsletters,
+    unsubCount: finalList.length,
+    unsubList:  finalList,
+    scannedAt:  new Date().toISOString(),
+    userEmail:  userEmail,
   };
 }
 
-export default function ScanPage() {
+// ── Component ─────────────────────────────────────────────────────────────────
+export default function ScanPage({ session }) {
   const navigate = useNavigate();
   const [status,   setStatus]   = useState("Initialising…");
   const [phase,    setPhase]    = useState("");
   const [progress, setProgress] = useState(0);
+  const [counter,  setCounter]  = useState("");  // ✅ live counter
   const [error,    setError]    = useState(null);
 
   useEffect(() => { startScan(); }, []);
 
   async function startScan() {
-    setError(null); setProgress(0); setPhase("");
+    setError(null);
+    setProgress(0);
+    setPhase("");
+    setCounter("");
+
     const token = localStorage.getItem("gmail_token");
     if (!token) { navigate("/login"); return; }
+
     localStorage.removeItem("scan_result");
+
     try {
-      const result = await runGmailScan(token, setProgress, setStatus, setPhase);
+      const result = await runGmailScan(
+        token,
+        setProgress,
+        setStatus,
+        setPhase,
+        setCounter  // ✅ pass counter setter
+      );
       localStorage.setItem("scan_result", JSON.stringify(result));
       setTimeout(() => navigate("/results"), 700);
     } catch (err) {
@@ -452,7 +617,7 @@ export default function ScanPage() {
         navigate("/login");
       } else {
         setError("Something went wrong. Please try again.");
-        console.error(err);
+        console.error("[DetachX] scan error:", err);
       }
     }
   }
@@ -469,21 +634,35 @@ export default function ScanPage() {
           </svg>
         </div>
         <div className="wordmark">Detach<span>X</span></div>
+
         <div className="scan-box">
           <div className="radar-wrap">
-            <div className="radar-ring" /><div className="radar-ring" /><div className="radar-ring" />
+            <div className="radar-ring" />
+            <div className="radar-ring" />
+            <div className="radar-ring" />
             <div className="radar-core">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                 <path d="M4 4l16 16M20 4L4 20" stroke="#6C63FF" strokeWidth="2" strokeLinecap="round"/>
               </svg>
             </div>
           </div>
+
           <h1 className="scan-title">Scanning your Gmail</h1>
+
+          {/* Phase label */}
           {phase && <span className="scan-phase">{phase}</span>}
+
+          {/* Status message */}
           <p className="scan-status">{status}</p>
+
+          {/* ✅ Live counter — emails loaded / candidates found */}
+          {counter && <span className="scan-counter">{counter}</span>}
+
+          {/* Progress bar */}
           <div className="progress-wrap">
             <div className="progress-bar" style={{ width: `${progress}%` }} />
           </div>
+
           {error && (
             <>
               <p className="scan-error">{error}</p>
@@ -491,6 +670,7 @@ export default function ScanPage() {
             </>
           )}
         </div>
+
         <p className="footer-note">© 2026 DetachX · All rights reserved</p>
       </div>
     </>
