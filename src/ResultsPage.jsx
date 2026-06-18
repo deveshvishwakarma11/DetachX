@@ -1,6 +1,10 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { saveUnsubEntry, saveBlockEntry } from "./lib/cloudStorage";
+import {
+  saveUnsubEntry,
+  saveBlockEntry,
+  migrateSupabaseStatuses,
+} from "./lib/cloudStorage";
 
 const S = `
   * { box-sizing: border-box; }
@@ -28,7 +32,7 @@ const S = `
   .sval { font-size: 2.4rem; font-weight: 700; letter-spacing: -0.04em; color: #F0EEE9; line-height: 1; margin-bottom: 0.25rem; }
   .ssub { font-size: 0.73rem; color: #6B6880; font-weight: 300; }
   .sec { max-width: 900px; margin: 3rem auto 0; padding: 0 2rem; animation: fu 0.5s ease 0.2s both; }
-  .shead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem; }
+  .shead { display: flex; align-items: center; margin-bottom: 1rem; }
   .stitle { font-size: 0.95rem; font-weight: 600; color: #F0EEE9; display: flex; align-items: center; gap: 0.5rem; }
   .tabs { display: flex; gap: 0.5rem; margin-bottom: 1.25rem; flex-wrap: wrap; }
   .tab { font-family: 'Space Grotesk', sans-serif; font-size: 0.78rem; font-weight: 600; padding: 0.4rem 1rem; border-radius: 99px; border: 1px solid #2A2A38; background: transparent; color: #6B6880; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 0.4rem; }
@@ -40,21 +44,40 @@ const S = `
   .ulist { display: flex; flex-direction: column; gap: 0.5rem; }
   .urow { display: flex; align-items: center; gap: 0.85rem; background: #111118; border: 1px solid #1E1E2A; border-radius: 10px; padding: 0.85rem 1.1rem; transition: border-color 0.2s, background 0.2s; }
   .urow:hover:not(.done) { border-color: #2A2A38; }
-  .urow.done   { opacity: 0.6; }
+  .urow.done   { opacity: 0.65; }
   .urow.done-u { background: #0D150D; border-color: rgba(34,197,94,0.15); }
+  .urow.done-f { background: #180E0E; border-color: rgba(245,158,11,0.2); opacity: 1; }
   .urow.done-b { background: #150D0D; border-color: rgba(239,68,68,0.15); }
   .ulet { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; font-weight: 700; flex-shrink: 0; text-transform: uppercase; }
   .ulet.purple { background: rgba(108,99,255,0.1); border: 1px solid rgba(108,99,255,0.15); color: #6C63FF; }
   .ulet.green  { background: rgba(34,197,94,0.08);  border: 1px solid rgba(34,197,94,0.2);  color: #22C55E; }
+  .ulet.amber  { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.2); color: #F59E0B; }
   .ulet.red    { background: rgba(239,68,68,0.08);  border: 1px solid rgba(239,68,68,0.2);  color: #EF4444; }
   .uinfo { flex: 1; min-width: 0; }
   .ufrom { font-size: 0.83rem; font-weight: 500; color: #F0EEE9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .usubj { font-size: 0.73rem; color: #4A4860; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
   .umeta { font-size: 0.68rem; color: #3A3A4A; margin-top: 3px; }
+  /* ✅ Status badges */
   .vstatus { display: inline-flex; align-items: center; gap: 5px; font-size: 0.68rem; font-weight: 600; margin-top: 5px; }
-  .vstatus.confirmed       { color: #22C55E; }
-  .vstatus.still_receiving { color: #F59E0B; }
-  .vstatus.pending         { color: #6B6880; font-weight: 500; }
+  .vstatus.us  { color: #22C55E; }
+  .vstatus.uf  { color: #F59E0B; }
+  /* Failed unsub warning box */
+  .fail-warn {
+    background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.18);
+    border-radius: 8px; padding: 0.65rem 0.9rem; margin-top: 0.5rem;
+    font-size: 0.72rem; color: #F59E0B; line-height: 1.55;
+  }
+  .fail-warn strong { color: #F0EEE9; font-weight: 600; display: block; margin-bottom: 2px; }
+  /* Block CTA inside failed row */
+  .block-cta {
+    font-family: 'Space Grotesk', sans-serif; font-size: 0.65rem; font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase; border-radius: 99px;
+    padding: 0.28rem 0.85rem; border: 1px solid rgba(239,68,68,0.35);
+    color: #EF4444; background: rgba(239,68,68,0.08);
+    cursor: pointer; white-space: nowrap; flex-shrink: 0;
+    transition: background 0.2s, transform 0.15s; line-height: 1.6;
+  }
+  .block-cta:hover { background: rgba(239,68,68,0.18); transform: scale(1.04); }
   .rbtn { font-family: 'Space Grotesk', sans-serif; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; border-radius: 99px; padding: 0.28rem 0.85rem; border: 1px solid; cursor: pointer; white-space: nowrap; flex-shrink: 0; transition: background 0.2s, transform 0.15s; line-height: 1.6; }
   .rbtn.unsub  { color: #6C63FF; background: rgba(108,99,255,0.08); border-color: rgba(108,99,255,0.3); }
   .rbtn.unsub:hover { background: rgba(108,99,255,0.18); transform: scale(1.04); }
@@ -116,18 +139,31 @@ const S = `
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
 const loadUnsub = () => { try { return JSON.parse(localStorage.getItem("detachx_unsub_history") || "[]"); } catch { return []; } };
-const saveUnsub = (d) => localStorage.setItem("detachx_unsub_history", JSON.stringify(d));
+const saveUnsubLocal = (d) => localStorage.setItem("detachx_unsub_history", JSON.stringify(d));
 const loadBlock = () => { try { return JSON.parse(localStorage.getItem("detachx_block_history") || "[]"); } catch { return []; } };
-const saveBlock = (d) => localStorage.setItem("detachx_block_history", JSON.stringify(d));
+const saveBlockLocal = (d) => localStorage.setItem("detachx_block_history", JSON.stringify(d));
 
 function cleanBlockHistory() {
   const raw   = loadBlock();
   const valid = raw.filter((e) => e.filterId && typeof e.filterId === "string" && e.filterId.length > 0);
-  if (valid.length !== raw.length) {
-    console.warn(`[DetachX] removed ${raw.length - valid.length} unverified block entries`);
-    saveBlock(valid);
-  }
+  if (valid.length !== raw.length) saveBlockLocal(valid);
   return valid;
+}
+
+// ✅ Migrate old statuses in localStorage on load
+function migrateLocalStatuses(history) {
+  const statusMap = {
+    pending:          "user_unsubscribed",
+    confirmed:        "user_unsubscribed",
+    still_receiving:  "unsubscribe_failed",
+    user_unsubscribed: "user_unsubscribed",
+    unsubscribe_failed:"unsubscribe_failed",
+  };
+  return history.map((entry) => ({
+    ...entry,
+    verificationStatus: statusMap[entry.verificationStatus] || "user_unsubscribed",
+    reportedAt: entry.reportedAt || entry.at,
+  }));
 }
 
 function extractEmail(from) {
@@ -140,7 +176,6 @@ async function createGmailFilter(token, filterEmail) {
     criteria: { from: filterEmail },
     action: { removeLabelIds: ["INBOX"], addLabelIds: ["TRASH"] },
   };
-  console.log("[DetachX] createGmailFilter → REQUEST", { filterEmail });
   const res = await fetch(
     "https://gmail.googleapis.com/gmail/v1/users/me/settings/filters",
     {
@@ -149,46 +184,13 @@ async function createGmailFilter(token, filterEmail) {
       body: JSON.stringify(payload),
     }
   );
-  console.log("[DetachX] createGmailFilter → STATUS", res.status);
   if (res.status === 401) throw new Error("TOKEN_EXPIRED");
   if (res.status === 403) throw new Error("PERMISSION_DENIED");
   const data = await res.json();
-  console.log("[DetachX] createGmailFilter → RESPONSE", data);
   if (!res.ok) throw new Error(data?.error?.message || `FILTER_ERROR_${res.status}`);
-  if (!data.id || typeof data.id !== "string" || !data.id.trim()) throw new Error("FILTER_ID_MISSING");
-  console.log("[DetachX] createGmailFilter → CONFIRMED ID:", data.id);
+  if (!data.id || typeof data.id !== "string" || !data.id.trim())
+    throw new Error("FILTER_ID_MISSING");
   return data;
-}
-
-// ── Verification badge ────────────────────────────────────────────────────────
-function VerificationBadge({ status }) {
-  if (status === "confirmed") return (
-    <div className="vstatus confirmed">
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-        <circle cx="5" cy="5" r="4.5" fill="rgba(34,197,94,0.15)" stroke="#22C55E" strokeWidth="0.8"/>
-        <path d="M2.5 5l2 2 3-3" stroke="#22C55E" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"/>
-      </svg>
-      Confirmed
-    </div>
-  );
-  if (status === "still_receiving") return (
-    <div className="vstatus still_receiving">
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-        <circle cx="5" cy="5" r="4.5" fill="rgba(245,158,11,0.12)" stroke="#F59E0B" strokeWidth="0.8"/>
-        <path d="M5 2.5v2.5M5 7h.01" stroke="#F59E0B" strokeWidth="1.1" strokeLinecap="round"/>
-      </svg>
-      Still Receiving
-    </div>
-  );
-  return (
-    <div className="vstatus pending">
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-        <circle cx="5" cy="5" r="4.5" fill="rgba(107,104,128,0.1)" stroke="#6B6880" strokeWidth="0.8"/>
-        <path d="M5 3v2.2l1.3 1.3" stroke="#6B6880" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"/>
-      </svg>
-      Pending Verification
-    </div>
-  );
 }
 
 let tid = 0;
@@ -219,8 +221,19 @@ export default function ResultsPage({ session }) {
       return;
     }
     setResult(data);
-    setUnsubHist(loadUnsub());
+
+    // ✅ Migrate old statuses on load
+    const rawUnsub    = loadUnsub();
+    const migratedUnsub = migrateLocalStatuses(rawUnsub);
+    // Save migrated back to localStorage
+    saveUnsubLocal(migratedUnsub);
+    setUnsubHist(migratedUnsub);
     setBlockHist(cleanBlockHistory());
+
+    // ✅ Migrate Supabase records once
+    if (userEmail) {
+      migrateSupabaseStatuses(userEmail).catch(() => {});
+    }
   }, []);
 
   // ── Toast ──────────────────────────────────────────────────────────────────
@@ -235,12 +248,11 @@ export default function ResultsPage({ session }) {
       setModal({ open: false, type: null, item: null, processing: false });
   };
 
-  // ── Domain sets ────────────────────────────────────────────────────────────
   const unsubDomains   = new Set(unsubHist.map((h) => h.domain));
   const blockDomains   = new Set(blockHist.map((h) => h.domain));
   const handledDomains = new Set([...unsubDomains, ...blockDomains]);
 
-  // ── UNSUB flow ─────────────────────────────────────────────────────────────
+  // ── Unsub flow ─────────────────────────────────────────────────────────────
   const clickUnsub = useCallback((item) => {
     setModal({ open: true, type: "unsub-confirm", item, processing: false });
   }, []);
@@ -251,6 +263,7 @@ export default function ResultsPage({ session }) {
   }, []);
 
   const confirmUnsubSuccess = useCallback(async (item) => {
+    const now = new Date().toISOString();
     const entry = {
       domain:             item.domain,
       from:               item.from,
@@ -258,16 +271,17 @@ export default function ResultsPage({ session }) {
       subject:            item.subject,
       unsubUrl:           item.unsubUrl,
       action:             "unsubscribed",
-      verificationStatus: "pending",
-      at:                 new Date().toISOString(),
+      // ✅ New status model
+      verificationStatus: "user_unsubscribed",
+      reportedAt:         now,
+      at:                 now,
     };
-    console.log("[DetachX] saveUnsub → SAVING (pending)", entry);
     const upd = [...unsubHist, entry];
     setUnsubHist(upd);
-    saveUnsub(upd);
-    await saveUnsubEntry(userEmail, entry); // ✅ Supabase
+    saveUnsubLocal(upd);
+    await saveUnsubEntry(userEmail, entry);
     setModal({ open: false, type: null, item: null, processing: false });
-    toast(`${item.domain} unsubscribed — verifying on next scan`, "success");
+    toast(`${item.domain} marked as unsubscribed`, "success");
   }, [unsubHist, userEmail]);
 
   const reportUnsubFailed = useCallback((item) => {
@@ -278,8 +292,13 @@ export default function ResultsPage({ session }) {
     setModal({ open: true, type: "block-confirm", item, processing: false });
   }, []);
 
-  // ── BLOCK flow ─────────────────────────────────────────────────────────────
+  // ── Block flow ─────────────────────────────────────────────────────────────
   const clickBlock = useCallback((item) => {
+    setModal({ open: true, type: "block-confirm", item, processing: false });
+  }, []);
+
+  // ✅ Block CTA from failed unsub row — reuses existing block system
+  const clickBlockFromFailed = useCallback((item) => {
     setModal({ open: true, type: "block-confirm", item, processing: false });
   }, []);
 
@@ -288,13 +307,14 @@ export default function ResultsPage({ session }) {
     if (!item) return;
     setModal((m) => ({ ...m, processing: true }));
     const token       = localStorage.getItem("gmail_token");
-    const filterEmail = extractEmail(item.from);
+    const filterEmail = extractEmail(item.from || item.email || item.domain);
     try {
       const filterResult = await createGmailFilter(token, filterEmail);
-      if (!filterResult.id) throw new Error("FILTER_ID_MISSING_POST_CHECK");
+      if (!filterResult.id) throw new Error("FILTER_ID_MISSING");
+
       const entry = {
         domain:      item.domain,
-        from:        item.from,
+        from:        item.from || item.email || item.domain,
         email:       filterEmail,
         subject:     item.subject || "",
         action:      "blocked",
@@ -302,16 +322,21 @@ export default function ResultsPage({ session }) {
         filterEmail: filterEmail,
         at:          new Date().toISOString(),
       };
-      console.log("[DetachX] saveBlock → SAVING", entry);
-      const upd = [...blockHist, entry];
-      setBlockHist(upd);
-      saveBlock(upd);
-      await saveBlockEntry(userEmail, entry); // ✅ Supabase
+
+      // If this was a failed unsub → remove from unsub history first
+      const updatedUnsub = unsubHist.filter((h) => h.domain !== item.domain);
+      setUnsubHist(updatedUnsub);
+      saveUnsubLocal(updatedUnsub);
+
+      const updatedBlock = [...blockHist, entry];
+      setBlockHist(updatedBlock);
+      saveBlockLocal(updatedBlock);
+      await saveBlockEntry(userEmail, entry);
+
       setModal({ open: false, type: null, item: null, processing: false });
       toast(`${item.domain} blocked ✓ — Filter ID: ${filterResult.id}`, "success", 5000);
     } catch (err) {
       setModal((m) => ({ ...m, processing: false }));
-      console.error("[DetachX] confirmBlock → FAILED:", err.message);
       if (err.message === "TOKEN_EXPIRED") {
         localStorage.removeItem("gmail_token"); navigate("/login"); return;
       }
@@ -323,9 +348,8 @@ export default function ResultsPage({ session }) {
         toast(`Block failed: ${err.message}`, "error", 5000);
       }
     }
-  }, [modal, blockHist, userEmail, navigate]);
+  }, [modal, blockHist, unsubHist, userEmail, navigate]);
 
-  // ── Logout ─────────────────────────────────────────────────────────────────
   const handleLogout = async () => {
     const { supabase } = await import("./lib/supabase");
     await supabase.auth.signOut();
@@ -347,6 +371,10 @@ export default function ResultsPage({ session }) {
 
   const activeList = result.unsubList.filter((i) => !handledDomains.has(i.domain));
 
+  // Split unsub history by status
+  const userUnsubbed  = unsubHist.filter((h) => h.verificationStatus === "user_unsubscribed");
+  const failedUnsubs  = unsubHist.filter((h) => h.verificationStatus === "unsubscribe_failed");
+
   return (
     <>
       <style>{S}</style>
@@ -367,9 +395,7 @@ export default function ResultsPage({ session }) {
         {/* Hero */}
         <div className="hero">
           <div className="hbadge">
-            <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor">
-              <circle cx="4" cy="4" r="4"/>
-            </svg>
+            <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><circle cx="4" cy="4" r="4"/></svg>
             Scan Complete
           </div>
           <h1>Your Digital Footprint</h1>
@@ -387,7 +413,7 @@ export default function ResultsPage({ session }) {
               </svg>
             </div>
             <div className="slbl">Total Scanned</div>
-            <div className="sval">{result.total}</div>
+            <div className="sval">{result.total.toLocaleString()}</div>
             <div className="ssub">emails</div>
           </div>
           <div className="scard">
@@ -411,7 +437,7 @@ export default function ResultsPage({ session }) {
             </div>
             <div className="slbl">Unsubscribed</div>
             <div className="sval">{unsubHist.length}</div>
-            <div className="ssub">confirmed</div>
+            <div className="ssub">user reported</div>
           </div>
           <div className="scard">
             <div className="ac" style={{ background: "#EF4444" }} />
@@ -483,21 +509,15 @@ export default function ResultsPage({ session }) {
                       <div className="uinfo">
                         <div className="ufrom">{item.from}</div>
                         <div className="usubj">{item.subject || "No subject"}</div>
-                       
-                      {item.emailCount > 1 && (
-                       <div className="umeta" style={{ color: "#6B6880" }}>
-                        {item.emailCount} emails
-                             
-                        {item.lastReceived && (
-                         <span style={{ color: "#3A3A4A" }}>
-                          {" · "}Last: {new Date(item.lastReceived).toLocaleDateString("en-IN", {
-                                       day: "numeric",
-                                       month: "short",
-                                       year: "numeric"
-                                     })}
-                                   </span>
-                                  )}
-                            </div>
+                        {item.emailCount > 1 && (
+                          <div className="umeta">
+                            {item.emailCount} emails
+                            {item.lastReceived && (
+                              <span style={{ color: "#3A3A4A" }}>
+                                {" · "}Last: {fmtS(item.lastReceived)}
+                              </span>
+                            )}
+                          </div>
                         )}
                         {!hasLink && (
                           <div className="umeta" style={{ color: "#4A4860" }}>
@@ -505,7 +525,6 @@ export default function ResultsPage({ session }) {
                           </div>
                         )}
                       </div>
-                      {/* ✅ Has link → UNSUB | No link → BLOCK */}
                       {hasLink
                         ? <button className="rbtn unsub" onClick={() => clickUnsub(item)}>Unsub</button>
                         : <button className="rbtn block" onClick={() => clickBlock(item)}>Block</button>
@@ -530,19 +549,57 @@ export default function ResultsPage({ session }) {
                 </div>
               ) : (
                 [...unsubHist].reverse().map((item, i) => {
-                  const vstatus = item.verificationStatus || "pending";
+                  const isFailed = item.verificationStatus === "unsubscribe_failed";
                   return (
-                    <div className="urow done done-u" key={i}>
-                      <div className="ulet green">
+                    <div
+                      className={`urow done ${isFailed ? "done-f" : "done-u"}`}
+                      key={i}
+                    >
+                      <div className={`ulet ${isFailed ? "amber" : "green"}`}>
                         {(item.domain?.[0] || "?").toUpperCase()}
                       </div>
-                      <div className="uinfo">
+                      <div className="uinfo" style={{ flex: 1 }}>
                         <div className="ufrom">{item.from}</div>
                         <div className="usubj">{item.email || extractEmail(item.from)}</div>
-                        <div className="umeta">Unsubscribed on {fmtS(item.at)}</div>
-                        <VerificationBadge status={vstatus} />
+                        <div className="umeta">
+                          Reported on {fmtS(item.reportedAt || item.at)}
+                        </div>
+
+                        {/* ✅ Status 1: user_unsubscribed */}
+                        {!isFailed && (
+                          <div className="vstatus us">
+                            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                              <circle cx="5" cy="5" r="4.5" fill="rgba(34,197,94,0.15)" stroke="#22C55E" strokeWidth="0.8"/>
+                              <path d="M2.5 5l2 2 3-3" stroke="#22C55E" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                            User Unsubscribed
+                          </div>
+                        )}
+
+                        {/* ✅ Status 2: unsubscribe_failed */}
+                        {isFailed && (
+                          <div className="fail-warn">
+                            <strong>⚠ Unsubscribe May Not Have Worked</strong>
+                            We detected new promotional emails after you reported unsubscribing.
+                          </div>
+                        )}
                       </div>
-                      <button className="rbtn done-u" disabled>Done ✓</button>
+
+                      {/* ✅ Block CTA for failed unsub — reuses existing block system */}
+                      {isFailed
+                        ? (
+                          <button
+                            className="block-cta"
+                            onClick={() => clickBlockFromFailed(item)}
+                            title="Create Gmail filter to block this sender"
+                          >
+                            Block
+                          </button>
+                        )
+                        : (
+                          <button className="rbtn done-u" disabled>Done ✓</button>
+                        )
+                      }
                     </div>
                   );
                 })
@@ -559,23 +616,19 @@ export default function ResultsPage({ session }) {
                     <circle cx="16" cy="16" r="14" stroke="#EF4444" strokeWidth="1.5"/>
                     <path d="M5 5l22 22" stroke="#EF4444" strokeWidth="1.8" strokeLinecap="round"/>
                   </svg>
-                  <p>No blocked senders yet.<br/>Click Block on senders with no unsubscribe link.</p>
+                  <p>No blocked senders yet.</p>
                 </div>
               ) : (
                 [...blockHist].reverse().map((item, i) => (
                   <div className="urow done done-b" key={i}>
-                    <div className="ulet red">
-                      {(item.domain?.[0] || "?").toUpperCase()}
-                    </div>
+                    <div className="ulet red">{(item.domain?.[0] || "?").toUpperCase()}</div>
                     <div className="uinfo">
                       <div className="ufrom">{item.from}</div>
                       <div className="usubj">{item.email}</div>
                       <div className="umeta">
                         Blocked on {fmtS(item.at)}
                         {" · "}
-                        <span style={{ color: "#22C55E" }}>
-                          Filter: {item.filterId}
-                        </span>
+                        <span style={{ color: "#22C55E" }}>Filter: {item.filterId}</span>
                       </div>
                     </div>
                     <button className="rbtn done-b" disabled>Blocked ✓</button>
@@ -664,7 +717,7 @@ export default function ResultsPage({ session }) {
         </div>
       )}
 
-      {/* 3. Unsub failed */}
+      {/* 3. Unsub failed — offer block */}
       {modal.open && modal.type === "unsub-failed" && modal.item && (
         <div className="moverlay" onClick={closeModal}>
           <div className="mbox" onClick={(e) => e.stopPropagation()}>
@@ -676,7 +729,7 @@ export default function ResultsPage({ session }) {
             </div>
             <h2 className="mtitle">Unsubscribe Failed</h2>
             <p className="mbody">
-              The unsubscribe page didn't work for{" "}
+              The page didn't work for{" "}
               <strong style={{ color: "#F0EEE9" }}>{modal.item.domain}</strong>.
               Block this sender instead — future emails will go to Trash automatically.
             </p>
@@ -705,12 +758,12 @@ export default function ResultsPage({ session }) {
             <h2 className="mtitle">Block Sender</h2>
             <p className="mbody">
               A Gmail filter will be created. Future emails from this sender
-              move to Trash automatically. Sender is saved to Blocked only
-              after Gmail confirms the filter.
+              move to Trash automatically. Saved to Blocked only after
+              Gmail confirms the filter.
             </p>
             <div className="msbox">
               <div className="msname">{modal.item.domain}</div>
-              <div className="msmail">{extractEmail(modal.item.from)}</div>
+              <div className="msmail">{extractEmail(modal.item.from || modal.item.email || "")}</div>
             </div>
             {modal.processing
               ? <div className="mproc"><div className="spin" />Creating Gmail filter…</div>

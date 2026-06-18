@@ -1,5 +1,18 @@
 import { supabase } from "./supabase";
 
+// ── Status migration helper ───────────────────────────────────────────────────
+// Old statuses → new statuses
+function migrateStatus(oldStatus) {
+  if (oldStatus === "still_receiving") return "unsubscribe_failed";
+  if (oldStatus === "confirmed")       return "user_unsubscribed";
+  if (oldStatus === "pending")         return "user_unsubscribed";
+  // Already new format
+  if (oldStatus === "user_unsubscribed") return "user_unsubscribed";
+  if (oldStatus === "unsubscribe_failed") return "unsubscribe_failed";
+  // Default
+  return "user_unsubscribed";
+}
+
 // ── Unsub History ─────────────────────────────────────────────────────────────
 
 export async function loadUnsubHistory(userEmail) {
@@ -18,14 +31,14 @@ export async function loadUnsubHistory(userEmail) {
     domain:             row.domain,
     from:               row.from_addr,
     email:              row.email,
-    subject:            row.subject || "",
+    subject:            row.subject   || "",
     unsubUrl:           row.unsub_url || "",
     action:             row.action,
-    verificationStatus: row.verification_status || "pending",
-    needsVerification:  row.needs_verification  || false,
-    stillReceiving:     row.still_receiving     || false,
-    // ✅ action_at use karo — actual user action time
-    at: row.action_at || row.created_at,
+    // ✅ Migrate old statuses on load
+    verificationStatus: migrateStatus(row.verification_status || "user_unsubscribed"),
+    // ✅ reportedAt = when user clicked "Yes I unsubscribed"
+    reportedAt:         row.action_at || row.created_at,
+    at:                 row.action_at || row.created_at,
   }));
 }
 
@@ -38,14 +51,14 @@ export async function saveUnsubEntry(userEmail, entry) {
         domain:              entry.domain,
         from_addr:           entry.from,
         email:               entry.email,
-        subject:             entry.subject            || "",
-        unsub_url:           entry.unsubUrl           || "",
-        action:              entry.action             || "unsubscribed",
-        verification_status: entry.verificationStatus || "pending",
-        needs_verification:  entry.needsVerification  || false,
-        still_receiving:     entry.stillReceiving     || false,
-        // ✅ entry.at explicitly save karo — user action ka actual time
-        action_at:           entry.at                 || new Date().toISOString(),
+        subject:             entry.subject  || "",
+        unsub_url:           entry.unsubUrl || "",
+        action:              "unsubscribed",
+        // ✅ Only new statuses saved
+        verification_status: migrateStatus(entry.verificationStatus || "user_unsubscribed"),
+        needs_verification:  false,
+        still_receiving:     entry.verificationStatus === "unsubscribe_failed",
+        action_at:           entry.reportedAt || entry.at || new Date().toISOString(),
         updated_at:          new Date().toISOString(),
       },
       { onConflict: "user_email,domain" }
@@ -55,28 +68,27 @@ export async function saveUnsubEntry(userEmail, entry) {
     console.error("[DetachX] saveUnsubEntry error:", error.message);
     return false;
   }
-  console.log("[DetachX] saveUnsubEntry → saved:", entry.domain, "action_at:", entry.at);
+  console.log("[DetachX] saveUnsubEntry → saved:", entry.domain);
   return true;
 }
 
-export async function updateUnsubVerification(
-  userEmail, domain, verificationStatus, stillReceiving
-) {
+export async function updateUnsubStatus(userEmail, domain, verificationStatus) {
+  // ✅ Renamed from updateUnsubVerification — cleaner name
   const { error } = await supabase
     .from("unsub_history")
     .update({
       verification_status: verificationStatus,
-      still_receiving:     stillReceiving,
+      still_receiving:     verificationStatus === "unsubscribe_failed",
       updated_at:          new Date().toISOString(),
     })
     .eq("user_email", userEmail)
     .eq("domain", domain);
 
   if (error) {
-    console.error("[DetachX] updateUnsubVerification error:", error.message);
+    console.error("[DetachX] updateUnsubStatus error:", error.message);
     return false;
   }
-  console.log("[DetachX] updateUnsubVerification →", domain, verificationStatus);
+  console.log("[DetachX] updateUnsubStatus →", domain, "→", verificationStatus);
   return true;
 }
 
@@ -102,8 +114,7 @@ export async function loadBlockHistory(userEmail) {
     action:      row.action,
     filterId:    row.filter_id,
     filterEmail: row.filter_email,
-    // ✅ action_at use karo
-    at: row.action_at || row.created_at,
+    at:          row.action_at    || row.created_at,
   }));
 }
 
@@ -120,7 +131,6 @@ export async function saveBlockEntry(userEmail, entry) {
         action:       "blocked",
         filter_id:    entry.filterId,
         filter_email: entry.filterEmail,
-        // ✅ entry.at explicitly save karo
         action_at:    entry.at           || new Date().toISOString(),
       },
       { onConflict: "user_email,domain" }
@@ -130,7 +140,7 @@ export async function saveBlockEntry(userEmail, entry) {
     console.error("[DetachX] saveBlockEntry error:", error.message);
     return false;
   }
-  console.log("[DetachX] saveBlockEntry → saved:", entry.domain, "action_at:", entry.at);
+  console.log("[DetachX] saveBlockEntry → saved:", entry.domain);
   return true;
 }
 
@@ -138,16 +148,18 @@ export async function saveBlockEntry(userEmail, entry) {
 export async function migrateFromLocalStorage(userEmail) {
   let migrated = false;
 
-  // Migrate unsub history
   try {
     const localUnsub = JSON.parse(
       localStorage.getItem("detachx_unsub_history") || "[]"
     );
     if (localUnsub.length > 0) {
-      console.log(`[DetachX] migrate: uploading ${localUnsub.length} unsub entries`);
+      console.log(`[DetachX] migrate: ${localUnsub.length} unsub entries`);
       for (const entry of localUnsub) {
-        // ✅ entry.at preserved correctly during migration
-        await saveUnsubEntry(userEmail, entry);
+        // ✅ Migrate old statuses during upload
+        await saveUnsubEntry(userEmail, {
+          ...entry,
+          verificationStatus: migrateStatus(entry.verificationStatus || "user_unsubscribed"),
+        });
       }
       migrated = true;
     }
@@ -155,7 +167,6 @@ export async function migrateFromLocalStorage(userEmail) {
     console.error("[DetachX] migrate unsub error:", e);
   }
 
-  // Migrate block history
   try {
     const localBlock = JSON.parse(
       localStorage.getItem("detachx_block_history") || "[]"
@@ -164,9 +175,8 @@ export async function migrateFromLocalStorage(userEmail) {
       (e) => e.filterId && typeof e.filterId === "string" && e.filterId.length > 0
     );
     if (validBlock.length > 0) {
-      console.log(`[DetachX] migrate: uploading ${validBlock.length} block entries`);
+      console.log(`[DetachX] migrate: ${validBlock.length} block entries`);
       for (const entry of validBlock) {
-        // ✅ entry.at preserved correctly during migration
         await saveBlockEntry(userEmail, entry);
       }
       migrated = true;
@@ -177,6 +187,34 @@ export async function migrateFromLocalStorage(userEmail) {
 
   if (migrated) {
     localStorage.setItem("detachx_migrated", "true");
-    console.log("[DetachX] migration complete — action_at preserved");
+    console.log("[DetachX] migration complete");
   }
+}
+
+// ── Migrate old statuses already in Supabase ──────────────────────────────────
+// Run once to fix existing DB records
+export async function migrateSupabaseStatuses(userEmail) {
+  const { data, error } = await supabase
+    .from("unsub_history")
+    .select("domain, verification_status")
+    .eq("user_email", userEmail);
+
+  if (error || !data) return;
+
+  const toUpdate = data.filter((row) =>
+    ["pending", "confirmed", "still_receiving"].includes(row.verification_status)
+  );
+
+  if (toUpdate.length === 0) {
+    console.log("[DetachX] migrateSupabaseStatuses: nothing to migrate");
+    return;
+  }
+
+  console.log(`[DetachX] migrateSupabaseStatuses: updating ${toUpdate.length} rows`);
+
+  for (const row of toUpdate) {
+    const newStatus = migrateStatus(row.verification_status);
+    await updateUnsubStatus(userEmail, row.domain, newStatus);
+  }
+  console.log("[DetachX] migrateSupabaseStatuses: done");
 }

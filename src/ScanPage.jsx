@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { updateUnsubVerification } from "./lib/cloudStorage";
+import { updateUnsubStatus } from "./lib/cloudStorage";
 
 const scanStyles = `
   .scan-page {
@@ -101,10 +101,10 @@ const scanStyles = `
 `;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const MAX_EMAILS  = 5000; // ✅ Goal 1 — removed 500 limit
-const PAGE_SIZE   = 50;   // Gmail API max per request
-const META_CHUNK  = 10;   // Parallel metadata fetches
-const BODY_CHUNK  = 5;    // Parallel body fetches (heavier)
+const MAX_EMAILS = 5000;
+const PAGE_SIZE  = 50;
+const META_CHUNK = 10;
+const BODY_CHUNK = 5;
 
 // ── Classification signals ────────────────────────────────────────────────────
 const NEWSLETTER_SIGNALS = [
@@ -133,25 +133,6 @@ const KNOWN_MARKETING_DOMAINS = [
   "notion","figma","github","gitlab","atlassian","slack",
   "zoom","dropbox","google","microsoft","apple","aws","adobe",
 ];
-const UNSUB_CONFIRMED_SIGNALS = [
-  "you have been unsubscribed",
-  "you've been unsubscribed",
-  "successfully unsubscribed",
-  "unsubscribe successful",
-  "subscription cancelled",
-  "subscription canceled",
-  "preferences updated",
-  "email preferences changed",
-  "email preferences updated",
-  "you will no longer receive",
-  "you'll no longer receive",
-  "removed from our list",
-  "removed from our mailing list",
-  "opt-out confirmed",
-  "opt out confirmed",
-  "we've removed you",
-  "we have removed you",
-];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function classify(from, subject, snippet) {
@@ -160,8 +141,7 @@ function classify(from, subject, snippet) {
   const isPromo         = !isNewsletter && PROMO_SIGNALS.some((s) => src.includes(s));
   const hasUnsub        = src.includes("unsubscribe");
   const isKnownMarketer = KNOWN_MARKETING_DOMAINS.some((d) => from.toLowerCase().includes(d));
-  const isUnsubConfirm  = UNSUB_CONFIRMED_SIGNALS.some((s) => src.includes(s));
-  return { isNewsletter, isPromo, hasUnsub, isKnownMarketer, isUnsubConfirm };
+  return { isNewsletter, isPromo, hasUnsub, isKnownMarketer };
 }
 
 function extractUnsubUrlFromHeader(headerValue) {
@@ -218,9 +198,9 @@ function extractUnsubUrlFromBody(html) {
       low.includes("pixel")
     ) continue;
     const score = BODY_UNSUB_KEYWORDS.reduce((a, kw) => {
-      if (text.includes(kw))                         return a + 2;
-      if (low.includes(kw.replace(/ /g, "-")))       return a + 1;
-      if (low.includes(kw.replace(/ /g, "")))        return a + 1;
+      if (text.includes(kw))                   return a + 2;
+      if (low.includes(kw.replace(/ /g, "-"))) return a + 1;
+      if (low.includes(kw.replace(/ /g, "")))  return a + 1;
       return a;
     }, 0);
     if (score > 0) cands.push({ href, score });
@@ -244,9 +224,7 @@ function extractUnsubUrlFromText(text) {
 }
 
 async function gmailFetch(url, token) {
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (res.status === 401) throw new Error("TOKEN_EXPIRED");
   if (!res.ok)            throw new Error(`API_ERROR_${res.status}`);
   return res.json();
@@ -261,53 +239,39 @@ async function fetchBodyUnsubUrl(messageId, token) {
     const parts = extractBodyParts(msg.payload);
     const html  = parts.find((p) => p.mimeType === "text/html");
     const txt   = parts.find((p) => p.mimeType === "text/plain");
-    if (html) {
-      const u = extractUnsubUrlFromBody(decodeBase64(html.data));
-      if (u) return u;
-    }
-    if (txt) {
-      const u = extractUnsubUrlFromText(decodeBase64(txt.data));
-      if (u) return u;
-    }
+    if (html) { const u = extractUnsubUrlFromBody(decodeBase64(html.data)); if (u) return u; }
+    if (txt)  { const u = extractUnsubUrlFromText(decodeBase64(txt.data));  if (u) return u; }
     return null;
   } catch { return null; }
 }
 
 function loadExcludedDomains() {
   const set = new Set();
-  try {
-    JSON.parse(localStorage.getItem("detachx_unsub_history") || "[]")
-      .forEach((h) => set.add(h.domain));
-  } catch {}
-  try {
-    JSON.parse(localStorage.getItem("detachx_block_history") || "[]")
-      .forEach((h) => set.add(h.domain));
-  } catch {}
+  try { JSON.parse(localStorage.getItem("detachx_unsub_history") || "[]").forEach((h) => set.add(h.domain)); } catch {}
+  try { JSON.parse(localStorage.getItem("detachx_block_history") || "[]").forEach((h) => set.add(h.domain)); } catch {}
   return set;
 }
 
-// ── Main scan function ────────────────────────────────────────────────────────
+// ── Main scan ─────────────────────────────────────────────────────────────────
 async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
-  const excluded = loadExcludedDomains();
+  const excluded  = loadExcludedDomains();
+  const userEmail = JSON.parse(localStorage.getItem("detachx_user") || "{}").email || "";
 
-  // Load unsub history for verification
+  // ✅ Load unsub history — only "user_unsubscribed" entries need checking
+  // "unsubscribe_failed" and "blocked" already handled
   let unsubHistory = [];
-  try {
-    unsubHistory = JSON.parse(localStorage.getItem("detachx_unsub_history") || "[]");
-  } catch {}
+  try { unsubHistory = JSON.parse(localStorage.getItem("detachx_unsub_history") || "[]"); } catch {}
 
-  // Only verify domains not yet confirmed
-  const unsubDomainMap = {};
+  // Map: domain → reportedAt (only user_unsubscribed status)
+  const watchMap = {};
   unsubHistory.forEach((h) => {
-    if ((h.verificationStatus || "pending") !== "confirmed") {
-      unsubDomainMap[h.domain] = h;
+    if (h.verificationStatus === "user_unsubscribed") {
+      watchMap[h.domain] = h.reportedAt || h.at;
     }
   });
-  const unsubDomainsToVerify = new Set(Object.keys(unsubDomainMap));
+  const watchDomains = new Set(Object.keys(watchMap));
 
-  // ════════════════════════════════════════════════════════
-  // PHASE 1 — Paginated ID fetch (Goal 1)
-  // ════════════════════════════════════════════════════════
+  // ── Phase 1: Paginated ID fetch ───────────────────────────────────────────
   onPhase("Phase 1 — Fetching email list");
   onStatus("Connecting to Gmail…");
   onProgress(2);
@@ -315,26 +279,18 @@ async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
   let pageToken = null;
   let allIds    = [];
 
-  // ✅ Goal 1: paginate until no nextPageToken OR MAX_EMAILS reached
   while (allIds.length < MAX_EMAILS) {
     const params = new URLSearchParams({ maxResults: PAGE_SIZE });
     if (pageToken) params.set("pageToken", pageToken);
-
     const data = await gmailFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`,
-      token
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`, token
     );
-
     if (!data.messages?.length) break;
-
-    allIds     = allIds.concat(data.messages.map((m) => m.id));
-    pageToken  = data.nextPageToken;
-
-    // ✅ Goal 1: live counter during pagination
+    allIds    = allIds.concat(data.messages.map((m) => m.id));
+    pageToken = data.nextPageToken;
     onCounter(`${allIds.length.toLocaleString()} emails loaded`);
     onStatus(`Fetching emails… ${allIds.length.toLocaleString()} loaded`);
-
-    if (!pageToken) break; // No more pages
+    if (!pageToken) break;
   }
 
   const total = allIds.length;
@@ -342,21 +298,14 @@ async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
   onStatus(`Found ${total.toLocaleString()} emails. Reading metadata…`);
   onProgress(8);
 
-  // ════════════════════════════════════════════════════════
-  // PHASE 2 — Metadata scan + frequency tracking (Goals 2 & 3)
-  // ════════════════════════════════════════════════════════
+  // ── Phase 2: Metadata scan ────────────────────────────────────────────────
   onPhase("Phase 2 — Analysing senders");
 
   let promos = 0, newsletters = 0;
-
-  // candidateMap: domain → candidate data
-  const candidateMap = {};
-
-  // ✅ Goal 2: frequency map — domain → { count, firstReceived, lastReceived }
-  const frequencyMap = {};
-
-  // Verification tracking
-  const verificationMap = {};
+  const candidateMap   = {};
+  const frequencyMap   = {};
+  // ✅ Track which "user_unsubscribed" domains got new promo emails
+  const failedUnsubDomains = new Set();
 
   for (let i = 0; i < total; i += META_CHUNK) {
     const chunk   = allIds.slice(i, i + META_CHUNK);
@@ -384,176 +333,146 @@ async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
       const domain    = from.match(/@([\w.-]+)/)?.[1] || "";
       const emailDate = dateHdr ? new Date(dateHdr) : null;
 
-      const {
-        isNewsletter, isPromo, hasUnsub, isKnownMarketer, isUnsubConfirm,
-      } = classify(from, subject, snippet);
+      const { isNewsletter, isPromo, hasUnsub, isKnownMarketer } =
+        classify(from, subject, snippet);
 
       if (isNewsletter) newsletters++;
       if (isPromo)      promos++;
 
-      // ✅ Goal 2: frequency tracking for ALL marketing/unsub senders
-      const isMarketingEmail =
-        isNewsletter || isPromo || hasUnsub || isKnownMarketer;
-
+      // ── Frequency tracking ────────────────────────────────────────────────
+      const isMarketingEmail = isNewsletter || isPromo || hasUnsub || isKnownMarketer;
       if (domain && isMarketingEmail) {
         if (!frequencyMap[domain]) {
           frequencyMap[domain] = { count: 0, firstReceived: null, lastReceived: null };
         }
         frequencyMap[domain].count++;
-
         if (emailDate) {
           const fd = frequencyMap[domain];
-          if (!fd.firstReceived || emailDate < new Date(fd.firstReceived)) {
+          if (!fd.firstReceived || emailDate < new Date(fd.firstReceived))
             fd.firstReceived = emailDate.toISOString();
-          }
-          if (!fd.lastReceived || emailDate > new Date(fd.lastReceived)) {
-            fd.lastReceived = emailDate.toISOString();
-          }
+          if (!fd.lastReceived  || emailDate > new Date(fd.lastReceived))
+            fd.lastReceived  = emailDate.toISOString();
         }
       }
 
-      // ── Verification check ─────────────────────────────────────────────────
-      if (domain && unsubDomainsToVerify.has(domain)) {
-        const histEntry    = unsubDomainMap[domain];
-        const unsubAt      = histEntry?.at ? new Date(histEntry.at) : null;
-        const isAfterUnsub = unsubAt && emailDate && emailDate > unsubAt;
+      // ── ✅ New simple verification logic ──────────────────────────────────
+      // Rule: if sender was "user_unsubscribed" AND
+      //       new promo/newsletter email arrived AFTER reportedAt
+      //       → mark as "unsubscribe_failed"
+      if (domain && watchDomains.has(domain)) {
+        const reportedAt   = watchMap[domain] ? new Date(watchMap[domain]) : null;
+        const isAfterReport = reportedAt && emailDate && emailDate > reportedAt;
+        const isPromoEmail  = isNewsletter || isPromo || isKnownMarketer || hasUnsub;
 
-        if (isAfterUnsub) {
-          if (!verificationMap[domain]) {
-            verificationMap[domain] = { stillReceiving: false, confirmed: false };
-          }
-          if (isUnsubConfirm) {
-            verificationMap[domain].confirmed = true;
-          } else if (isNewsletter || isPromo || isKnownMarketer || hasUnsub) {
-            verificationMap[domain].stillReceiving = true;
-          }
+        if (isAfterReport && isPromoEmail) {
+          failedUnsubDomains.add(domain);
+          console.log(
+            `[DetachX] unsubscribe_failed detected: ${domain}`,
+            `(email date: ${emailDate?.toLocaleDateString()},`,
+            `reported: ${reportedAt?.toLocaleDateString()})`
+          );
         }
       }
 
-      // ── Active candidate detection ─────────────────────────────────────────
+      // ── Active candidate detection ────────────────────────────────────────
       const headerUrl   = extractUnsubUrlFromHeader(listUnsub);
       const isCandidate = hasUnsub || listUnsub || isKnownMarketer || isNewsletter || isPromo;
 
       if (isCandidate && domain && !excluded.has(domain)) {
         if (!candidateMap[domain]) {
           candidateMap[domain] = {
-            from,
-            subject,
-            domain,
+            from, subject, domain,
             unsubUrl:  headerUrl,
             messageId: msg.id,
             needsBody: !headerUrl,
           };
         } else if (!candidateMap[domain].unsubUrl && headerUrl) {
-          // Better URL found for existing candidate
           candidateMap[domain].unsubUrl  = headerUrl;
           candidateMap[domain].needsBody = false;
         }
       }
     }
 
-    // ✅ Progress: phase 2 takes 8% → 55%
     const pct = 8 + Math.round(((i + META_CHUNK) / total) * 47);
     onProgress(Math.min(55, pct));
-    onStatus(`Analysing senders… ${Math.min(i + META_CHUNK, total).toLocaleString()} / ${total.toLocaleString()}`);
+    onStatus(`Analysing… ${Math.min(i + META_CHUNK, total).toLocaleString()} / ${total.toLocaleString()}`);
     onCounter(`${Object.keys(candidateMap).length} candidates found`);
   }
 
-  // ════════════════════════════════════════════════════════
-  // PHASE 3 — Deep body scan for candidates without header URL
-  // ════════════════════════════════════════════════════════
+  // ── Phase 3: Deep body scan ───────────────────────────────────────────────
   const needsBody = Object.values(candidateMap).filter((c) => c.needsBody);
-
   onPhase("Phase 3 — Deep body scan");
 
   if (needsBody.length > 0) {
-    onStatus(`Deep scanning ${needsBody.length} senders for unsub links…`);
+    onStatus(`Deep scanning ${needsBody.length} senders…`);
     onProgress(57);
-    onCounter(`${needsBody.length} senders need deep scan`);
-
     for (let i = 0; i < needsBody.length; i += BODY_CHUNK) {
       const chunk = needsBody.slice(i, i + BODY_CHUNK);
-      const urls  = await Promise.all(
-        chunk.map((c) => fetchBodyUnsubUrl(c.messageId, token))
-      );
+      const urls  = await Promise.all(chunk.map((c) => fetchBodyUnsubUrl(c.messageId, token)));
       chunk.forEach((c, idx) => {
         if (urls[idx]) {
           candidateMap[c.domain].unsubUrl  = urls[idx];
           candidateMap[c.domain].needsBody = false;
         }
       });
-      const pct = 57 + Math.round(((i + BODY_CHUNK) / needsBody.length) * 33);
-      onProgress(Math.min(90, pct));
-      onStatus(
-        `Deep scanning… ${Math.min(i + BODY_CHUNK, needsBody.length)} / ${needsBody.length}`
-      );
+      onProgress(Math.min(90, 57 + Math.round(((i + BODY_CHUNK) / needsBody.length) * 33)));
+      onStatus(`Deep scanning… ${Math.min(i + BODY_CHUNK, needsBody.length)} / ${needsBody.length}`);
     }
   } else {
     onProgress(90);
-    onStatus("All candidates have header links — skipping body scan.");
+    onStatus("Header links found — skipping body scan.");
     await new Promise((r) => setTimeout(r, 300));
   }
 
-  // ════════════════════════════════════════════════════════
-  // PHASE 4 — Apply verification results
-  // ════════════════════════════════════════════════════════
+  // ── Phase 4: Apply failed unsub status ───────────────────────────────────
   onPhase("Phase 4 — Finalising");
-  onStatus("Applying verification results…");
+  onStatus("Checking unsubscribe results…");
   onProgress(92);
 
-  const userEmail = JSON.parse(localStorage.getItem("detachx_user") || "{}").email || "";
-
-  if (Object.keys(verificationMap).length > 0) {
+  if (failedUnsubDomains.size > 0) {
+    // ✅ Update localStorage
     const updatedHistory = unsubHistory.map((entry) => {
-      const v = verificationMap[entry.domain];
-      if (!v) return entry;
-      let newStatus = entry.verificationStatus || "pending";
-      if (v.confirmed)           newStatus = "confirmed";
-      else if (v.stillReceiving) newStatus = "still_receiving";
-      return { ...entry, verificationStatus: newStatus };
+      if (failedUnsubDomains.has(entry.domain)) {
+        return { ...entry, verificationStatus: "unsubscribe_failed" };
+      }
+      return entry;
     });
-
     localStorage.setItem("detachx_unsub_history", JSON.stringify(updatedHistory));
 
-    // Sync to Supabase
+    // ✅ Sync to Supabase
     if (userEmail) {
-      for (const [domain, v] of Object.entries(verificationMap)) {
-        const newStatus = v.confirmed
-          ? "confirmed"
-          : v.stillReceiving
-          ? "still_receiving"
-          : "pending";
-        await updateUnsubVerification(userEmail, domain, newStatus, v.stillReceiving);
+      for (const domain of failedUnsubDomains) {
+        await updateUnsubStatus(userEmail, domain, "unsubscribe_failed");
       }
     }
-    console.log("[DetachX] verification results:", verificationMap);
+
+    console.log(
+      "[DetachX] unsubscribe_failed updated:",
+      [...failedUnsubDomains]
+    );
+  } else {
+    onStatus("No failed unsubscribes detected.");
   }
 
-  // ════════════════════════════════════════════════════════
-  // PHASE 5 — Build enriched + sorted result (Goals 3 & 4)
-  // ════════════════════════════════════════════════════════
+  // ── Phase 5: Build enriched sorted result ────────────────────────────────
   onStatus("Building results…");
   onProgress(96);
 
-  // ✅ Goal 3: Enrich each candidate with frequency data
-  const unsubList = Object.values(candidateMap).map((candidate) => {
-    const freq = frequencyMap[candidate.domain] || {};
+  const unsubList = Object.values(candidateMap).map((c) => {
+    const freq = frequencyMap[c.domain] || {};
     return {
-      from:          candidate.from,
-      subject:       candidate.subject,
-      domain:        candidate.domain,
-      unsubUrl:      candidate.unsubUrl || null,
-      // ✅ Goal 3: new enriched fields
-      emailCount:    freq.count         || 1,
+      from:          c.from,
+      subject:       c.subject,
+      domain:        c.domain,
+      unsubUrl:      c.unsubUrl      || null,
+      emailCount:    freq.count      || 1,
       lastReceived:  freq.lastReceived  || null,
       firstReceived: freq.firstReceived || null,
     };
   });
 
-  // ✅ Goal 4: Sort by emailCount descending — highest volume first
+  // Sort by email count — most annoying first
   unsubList.sort((a, b) => b.emailCount - a.emailCount);
-
-  // Cap at 100 results (sorted by frequency — most annoying first)
   const finalList = unsubList.slice(0, 100);
 
   onProgress(100);
@@ -562,19 +481,18 @@ async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
 
   console.log("[DetachX] scan complete:", {
     total,
-    candidates: finalList.length,
-    topSender:  finalList[0]?.domain,
-    topCount:   finalList[0]?.emailCount,
+    candidates:       finalList.length,
+    failedUnsubs:     failedUnsubDomains.size,
+    topSender:        finalList[0]?.domain,
+    topCount:         finalList[0]?.emailCount,
   });
 
   return {
-    total,
-    promos,
-    newsletters,
+    total, promos, newsletters,
     unsubCount: finalList.length,
     unsubList:  finalList,
     scannedAt:  new Date().toISOString(),
-    userEmail:  userEmail,
+    userEmail,
   };
 }
 
@@ -584,30 +502,18 @@ export default function ScanPage({ session }) {
   const [status,   setStatus]   = useState("Initialising…");
   const [phase,    setPhase]    = useState("");
   const [progress, setProgress] = useState(0);
-  const [counter,  setCounter]  = useState("");  // ✅ live counter
+  const [counter,  setCounter]  = useState("");
   const [error,    setError]    = useState(null);
 
   useEffect(() => { startScan(); }, []);
 
   async function startScan() {
-    setError(null);
-    setProgress(0);
-    setPhase("");
-    setCounter("");
-
+    setError(null); setProgress(0); setPhase(""); setCounter("");
     const token = localStorage.getItem("gmail_token");
     if (!token) { navigate("/login"); return; }
-
     localStorage.removeItem("scan_result");
-
     try {
-      const result = await runGmailScan(
-        token,
-        setProgress,
-        setStatus,
-        setPhase,
-        setCounter  // ✅ pass counter setter
-      );
+      const result = await runGmailScan(token, setProgress, setStatus, setPhase, setCounter);
       localStorage.setItem("scan_result", JSON.stringify(result));
       setTimeout(() => navigate("/results"), 700);
     } catch (err) {
@@ -634,35 +540,22 @@ export default function ScanPage({ session }) {
           </svg>
         </div>
         <div className="wordmark">Detach<span>X</span></div>
-
         <div className="scan-box">
           <div className="radar-wrap">
-            <div className="radar-ring" />
-            <div className="radar-ring" />
-            <div className="radar-ring" />
+            <div className="radar-ring" /><div className="radar-ring" /><div className="radar-ring" />
             <div className="radar-core">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                 <path d="M4 4l16 16M20 4L4 20" stroke="#6C63FF" strokeWidth="2" strokeLinecap="round"/>
               </svg>
             </div>
           </div>
-
           <h1 className="scan-title">Scanning your Gmail</h1>
-
-          {/* Phase label */}
-          {phase && <span className="scan-phase">{phase}</span>}
-
-          {/* Status message */}
+          {phase   && <span className="scan-phase">{phase}</span>}
           <p className="scan-status">{status}</p>
-
-          {/* ✅ Live counter — emails loaded / candidates found */}
           {counter && <span className="scan-counter">{counter}</span>}
-
-          {/* Progress bar */}
           <div className="progress-wrap">
             <div className="progress-bar" style={{ width: `${progress}%` }} />
           </div>
-
           {error && (
             <>
               <p className="scan-error">{error}</p>
@@ -670,7 +563,6 @@ export default function ScanPage({ session }) {
             </>
           )}
         </div>
-
         <p className="footer-note">© 2026 DetachX · All rights reserved</p>
       </div>
     </>
