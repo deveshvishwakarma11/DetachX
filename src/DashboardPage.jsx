@@ -5,6 +5,7 @@ import {
   loadUnsubHistory,
   loadBlockHistory,
   migrateFromLocalStorage,
+  getFreshGmailToken,
 } from "./lib/cloudStorage";
 
 const dashStyles = `
@@ -84,6 +85,17 @@ const dashStyles = `
   }
   .scan-btn:hover { background: #ffffff; transform: translateY(-1px); }
   .scan-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .fp-btn {
+    position: relative; width: 100%; display: inline-flex;
+    align-items: center; justify-content: center; gap: 0.6rem;
+    font-family: 'Space Grotesk', sans-serif; font-size: 0.95rem;
+    font-weight: 600; letter-spacing: 0.02em; color: #6C63FF;
+    padding: 0.9rem 1.5rem; border-radius: 8px; border: 1px solid rgba(108,99,255,0.3);
+    background: rgba(108,99,255,0.06); cursor: pointer; margin-bottom: 0.85rem;
+    transition: background 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+  }
+  .fp-btn:hover { background: rgba(108,99,255,0.12); border-color: rgba(108,99,255,0.5); transform: translateY(-1px); }
+  .fp-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
   .logout-btn {
     width: 100%; display: inline-flex; align-items: center; justify-content: center;
     font-family: 'Space Grotesk', sans-serif; font-size: 0.85rem; font-weight: 500;
@@ -106,58 +118,6 @@ const dashStyles = `
   }
   @media (max-width: 480px) { .dash-card { padding: 2rem 1.5rem; } }
 `;
-
-// ── Token helpers ─────────────────────────────────────────────────────────────
-
-// Check if a token is within 5 minutes of expiry or already expired
-function isTokenExpiredOrExpiring(session) {
-  if (!session?.expires_at) return true;
-  const expiresAt  = session.expires_at * 1000; // seconds → ms
-  const now        = Date.now();
-  const fiveMinMs  = 5 * 60 * 1000;
-  return now >= expiresAt - fiveMinMs;
-}
-
-// ✅ Get a fresh token — refresh if needed
-async function getFreshGmailToken() {
-  try {
-    // Ask Supabase for current session
-    const { data, error } = await supabase.auth.getSession();
-    if (error || !data.session) {
-      console.warn("[DetachX] getFreshGmailToken: no session");
-      return null;
-    }
-
-    let session = data.session;
-
-    // If token is expired or expiring soon — refresh it
-    if (isTokenExpiredOrExpiring(session)) {
-      console.log("[DetachX] token expiring — refreshing session");
-      const { data: refreshed, error: refreshError } =
-        await supabase.auth.refreshSession();
-      if (refreshError || !refreshed.session) {
-        console.error("[DetachX] session refresh failed:", refreshError?.message);
-        return null;
-      }
-      session = refreshed.session;
-    }
-
-    const token = session.provider_token;
-    if (!token) {
-      console.warn("[DetachX] provider_token missing from session");
-      return null;
-    }
-
-    // ✅ Always update localStorage with latest token
-    localStorage.setItem("gmail_token", token);
-    console.log("[DetachX] getFreshGmailToken → token saved, expires_at:",
-      new Date(session.expires_at * 1000).toLocaleTimeString());
-    return token;
-  } catch (err) {
-    console.error("[DetachX] getFreshGmailToken error:", err);
-    return null;
-  }
-}
 
 export default function DashboardPage({ session }) {
   const navigate   = useNavigate();
@@ -243,25 +203,35 @@ export default function DashboardPage({ session }) {
     setSyncState("syncing");
     setSyncMsg("Refreshing Gmail access…");
 
-    const freshToken = await getFreshGmailToken();
+    // Fix #10: Retry once before logging out
+    let freshToken = await getFreshGmailToken();
     if (!freshToken) {
-      // Token unrecoverable — need fresh login
-      await supabase.auth.signOut();
-      localStorage.removeItem("detachx_user");
-      localStorage.removeItem("gmail_token");
-      localStorage.removeItem("scan_result");
-      navigate("/login");
+      // Transient failure — retry once after a brief delay
+      console.log("[DetachX] handleScan: first token refresh failed, retrying…");
+      setSyncMsg("Retrying…");
+      await new Promise((r) => setTimeout(r, 2000));
+      freshToken = await getFreshGmailToken();
+    }
+
+    if (!freshToken) {
+      // Both attempts failed — show error instead of destroying state
+      console.warn("[DetachX] handleScan: token refresh failed after retry");
+      setSyncState("error");
+      setSyncMsg("Could not refresh Gmail access. Try again.");
+      setTokenOk(false);
       return;
     }
 
     setSyncState("done");
     setSyncMsg("Ready");
+    setTokenOk(true);
     navigate("/scan");
   };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
     localStorage.removeItem("detachx_user");
+    sessionStorage.removeItem("gmail_token");
     localStorage.removeItem("gmail_token");
     localStorage.removeItem("scan_result");
     localStorage.removeItem("detachx_migrated");
@@ -330,6 +300,19 @@ export default function DashboardPage({ session }) {
               <path d="M8 1v14M1 8h14" stroke="#0A0A0F" strokeWidth="1.8" strokeLinecap="round"/>
             </svg>
             {syncState === "syncing" ? "Syncing…" : "Scan Gmail"}
+          </button>
+
+          {/* Digital Footprint button */}
+          <button
+            className="fp-btn"
+            onClick={() => navigate("/footprint")}
+            disabled={syncState === "syncing"}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M8 1C4.1 1 1 4.1 1 8s3.1 7 7 7 7-3.1 7-7-3.1-7-7-7zM8 4v4l2.5 1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              <circle cx="8" cy="8" r="1.5" fill="currentColor"/>
+            </svg>
+            Digital Footprint
           </button>
 
           <button className="logout-btn" onClick={handleLogout}>Log out</button>

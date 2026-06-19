@@ -171,26 +171,36 @@ function extractEmail(from) {
   return m ? m[1] : from.trim();
 }
 
-async function createGmailFilter(token, filterEmail) {
+async function createGmailFilter(token, filterEmail, timeoutMs = 30000) {
   const payload = {
     criteria: { from: filterEmail },
     action: { removeLabelIds: ["INBOX"], addLabelIds: ["TRASH"] },
   };
-  const res = await fetch(
-    "https://gmail.googleapis.com/gmail/v1/users/me/settings/filters",
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }
-  );
-  if (res.status === 401) throw new Error("TOKEN_EXPIRED");
-  if (res.status === 403) throw new Error("PERMISSION_DENIED");
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message || `FILTER_ERROR_${res.status}`);
-  if (!data.id || typeof data.id !== "string" || !data.id.trim())
-    throw new Error("FILTER_ID_MISSING");
-  return data;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(
+      "https://gmail.googleapis.com/gmail/v1/users/me/settings/filters",
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      }
+    );
+    clearTimeout(timeoutId);
+    if (res.status === 401) throw new Error("TOKEN_EXPIRED");
+    if (res.status === 403) throw new Error("PERMISSION_DENIED");
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || `FILTER_ERROR_${res.status}`);
+    if (!data.id || typeof data.id !== "string" || !data.id.trim())
+      throw new Error("FILTER_ID_MISSING");
+    return data;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === "AbortError") throw new Error("REQUEST_TIMEOUT");
+    throw err;
+  }
 }
 
 let tid = 0;
@@ -258,7 +268,20 @@ export default function ResultsPage({ session }) {
   }, []);
 
   const proceedUnsub = useCallback((item) => {
-    window.open(item.unsubUrl, "_blank", "noopener,noreferrer");
+    const opened = window.open(item.unsubUrl, "_blank", "noopener,noreferrer");
+    if (!opened || opened.closed || typeof opened.closed === "undefined") {
+      // Fix #11: Popup was blocked — show URL in toast and as direct link
+      toast(`Popup blocked. Open the link manually: ${item.unsubUrl}`, "warn", 8000);
+      // Still show verification but with the URL displayed
+      setModal({ open: true, type: "unsub-verify-blocked", item, processing: false });
+    } else {
+      setModal({ open: true, type: "unsub-verify", item, processing: false });
+    }
+  }, [toast]);
+
+  /* Fix #11: Handle case where user opens the link manually after popup was blocked */
+  const proceedUnsubManual = useCallback((item) => {
+    // User clicked the manual link — same flow as if popup succeeded
     setModal({ open: true, type: "unsub-verify", item, processing: false });
   }, []);
 
@@ -306,7 +329,7 @@ export default function ResultsPage({ session }) {
     const { item } = modal;
     if (!item) return;
     setModal((m) => ({ ...m, processing: true }));
-    const token       = localStorage.getItem("gmail_token");
+    const token       = sessionStorage.getItem("gmail_token") || localStorage.getItem("gmail_token");
     const filterEmail = extractEmail(item.from || item.email || item.domain);
     try {
       const filterResult = await createGmailFilter(token, filterEmail);
@@ -334,18 +357,21 @@ export default function ResultsPage({ session }) {
       await saveBlockEntry(userEmail, entry);
 
       setModal({ open: false, type: null, item: null, processing: false });
-      toast(`${item.domain} blocked ✓ — Filter ID: ${filterResult.id}`, "success", 5000);
+      toast(`${item.domain} filtered ✓ — Filter ID: ${filterResult.id}`, "success", 5000);
     } catch (err) {
       setModal((m) => ({ ...m, processing: false }));
       if (err.message === "TOKEN_EXPIRED") {
+        sessionStorage.removeItem("gmail_token");
         localStorage.removeItem("gmail_token"); navigate("/login"); return;
       }
-      if (err.message === "PERMISSION_DENIED") {
+      if (err.message === "REQUEST_TIMEOUT") {
+        toast("Gmail is not responding. Check your connection and try again.", "error", 6000);
+      } else if (err.message === "PERMISSION_DENIED") {
         toast("Permission denied. Log out and log in again.", "error", 6000);
       } else if (err.message.includes("FILTER_ID_MISSING")) {
         toast("Gmail did not confirm the filter. Sender stays Active.", "error", 5000);
       } else {
-        toast(`Block failed: ${err.message}`, "error", 5000);
+        toast(`Filter failed: ${err.message}`, "error", 5000);
       }
     }
   }, [modal, blockHist, unsubHist, userEmail, navigate]);
@@ -354,6 +380,7 @@ export default function ResultsPage({ session }) {
     const { supabase } = await import("./lib/supabase");
     await supabase.auth.signOut();
     localStorage.removeItem("detachx_user");
+    sessionStorage.removeItem("gmail_token");
     localStorage.removeItem("gmail_token");
     localStorage.removeItem("scan_result");
     localStorage.removeItem("detachx_migrated");
@@ -447,7 +474,7 @@ export default function ResultsPage({ session }) {
                 <path d="M4 4l10 10" stroke="#EF4444" strokeWidth="1.4" strokeLinecap="round"/>
               </svg>
             </div>
-            <div className="slbl">Blocked</div>
+            <div className="slbl">Filtered to Trash</div>
             <div className="sval">{blockHist.length}</div>
             <div className="ssub">Gmail filtered</div>
           </div>
@@ -483,7 +510,7 @@ export default function ResultsPage({ session }) {
               className={`tab t-red${activeTab === "blocked" ? " active" : ""}`}
               onClick={() => setActiveTab("blocked")}
             >
-              Blocked <span className="tab-count">{blockHist.length}</span>
+              Filtered <span className="tab-count">{blockHist.length}</span>
             </button>
           </div>
 
@@ -521,13 +548,13 @@ export default function ResultsPage({ session }) {
                         )}
                         {!hasLink && (
                           <div className="umeta" style={{ color: "#4A4860" }}>
-                            No unsubscribe link — block to filter
+                            No unsubscribe link — filter to trash
                           </div>
                         )}
                       </div>
                       {hasLink
                         ? <button className="rbtn unsub" onClick={() => clickUnsub(item)}>Unsub</button>
-                        : <button className="rbtn block" onClick={() => clickBlock(item)}>Block</button>
+                        : <button className="rbtn block" onClick={() => clickBlock(item)}>Filter</button>
                       }
                     </div>
                   );
@@ -587,13 +614,11 @@ export default function ResultsPage({ session }) {
 
                       {/* ✅ Block CTA for failed unsub — reuses existing block system */}
                       {isFailed
-                        ? (
-                          <button
-                            className="block-cta"
+                        ? (                    <button className="block-cta"
                             onClick={() => clickBlockFromFailed(item)}
-                            title="Create Gmail filter to block this sender"
+                            title="Create Gmail filter to trash this sender's emails"
                           >
-                            Block
+                            Filter
                           </button>
                         )
                         : (
@@ -616,7 +641,7 @@ export default function ResultsPage({ session }) {
                     <circle cx="16" cy="16" r="14" stroke="#EF4444" strokeWidth="1.5"/>
                     <path d="M5 5l22 22" stroke="#EF4444" strokeWidth="1.8" strokeLinecap="round"/>
                   </svg>
-                  <p>No blocked senders yet.</p>
+                  <p>No filtered senders yet.</p>
                 </div>
               ) : (
                 [...blockHist].reverse().map((item, i) => (
@@ -626,12 +651,12 @@ export default function ResultsPage({ session }) {
                       <div className="ufrom">{item.from}</div>
                       <div className="usubj">{item.email}</div>
                       <div className="umeta">
-                        Blocked on {fmtS(item.at)}
+                        Filtered on {fmtS(item.at)}
                         {" · "}
                         <span style={{ color: "#22C55E" }}>Filter: {item.filterId}</span>
                       </div>
                     </div>
-                    <button className="rbtn done-b" disabled>Blocked ✓</button>
+                    <button className="rbtn done-b" disabled>Filtered ✓</button>
                   </div>
                 ))
               )}
@@ -717,6 +742,47 @@ export default function ResultsPage({ session }) {
         </div>
       )}
 
+      {/* 2b. Post-unsub verify — popup was blocked (Fix #11) */}
+      {modal.open && modal.type === "unsub-verify-blocked" && modal.item && (
+        <div className="moverlay">
+          <div className="mbox">
+            <div className="mico amber">
+              <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+                <path d="M11 4v7M11 15h.01" stroke="#F59E0B" strokeWidth="2" strokeLinecap="round"/>
+                <circle cx="11" cy="11" r="9" stroke="#F59E0B" strokeWidth="1.6"/>
+              </svg>
+            </div>
+            <p className="verify-q">⚠ Popup was blocked</p>
+            <p className="verify-sub">
+              Your browser blocked the popup. Click the link below to open
+              the unsubscribe page, then come back and confirm.
+            </p>
+            <div className="msbox">
+              <div className="msname">{modal.item.domain}</div>
+              <div className="msmail" style={{
+                wordBreak: "break-all", fontSize: "0.7rem",
+                color: "#6C63FF", marginTop: "4px"
+              }}>
+                {modal.item.unsubUrl}
+              </div>
+            </div>
+            <button
+              className="vbtn yes"
+              onClick={() => {
+                window.open(modal.item.unsubUrl, "_blank", "noopener,noreferrer");
+                proceedUnsubManual(modal.item);
+              }}
+              style={{ marginBottom: "0.4rem" }}
+            >
+              🔗 Open Unsubscribe Page
+            </button>
+            <button className="vbtn no" onClick={() => reportUnsubFailed(modal.item)}>
+              ✗ Skip (unsubscribe failed)
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 3. Unsub failed — offer block */}
       {modal.open && modal.type === "unsub-failed" && modal.item && (
         <div className="moverlay" onClick={closeModal}>
@@ -731,11 +797,11 @@ export default function ResultsPage({ session }) {
             <p className="mbody">
               The page didn't work for{" "}
               <strong style={{ color: "#F0EEE9" }}>{modal.item.domain}</strong>.
-              Block this sender instead — future emails will go to Trash automatically.
+              Filter this sender instead — future emails will go to Trash automatically.
             </p>
             <div className="macts col">
               <button className="vbtn blk" onClick={() => switchToBlock(modal.item)}>
-                Block Sender Instead
+                Filter to Trash
               </button>
               <button className="mcancel" onClick={closeModal}>
                 Keep Active (try again later)
@@ -755,10 +821,10 @@ export default function ResultsPage({ session }) {
                 <path d="M4 4l14 14" stroke="#EF4444" strokeWidth="1.6" strokeLinecap="round"/>
               </svg>
             </div>
-            <h2 className="mtitle">Block Sender</h2>
+            <h2 className="mtitle">Filter Sender to Trash</h2>
             <p className="mbody">
               A Gmail filter will be created. Future emails from this sender
-              move to Trash automatically. Saved to Blocked only after
+              move to Trash automatically. Saved to Filtered only after
               Gmail confirms the filter.
             </p>
             <div className="msbox">
@@ -771,7 +837,7 @@ export default function ResultsPage({ session }) {
                 <div className="macts">
                   <button className="mcancel" onClick={closeModal}>Cancel</button>
                   <button className="mconfirm red" onClick={confirmBlock}>
-                    Confirm — Block Sender
+                    Confirm — Filter to Trash
                   </button>
                 </div>
               )

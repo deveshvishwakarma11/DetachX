@@ -6,6 +6,7 @@ import LoginPage     from "./LoginPage";
 import DashboardPage from "./DashboardPage";
 import ScanPage      from "./ScanPage";
 import ResultsPage   from "./ResultsPage";
+import FootprintPage  from "./FootprintPage";
 
 export default function App() {
   const [session,  setSession]  = useState(undefined);
@@ -30,7 +31,12 @@ export default function App() {
 
     // ✅ Step 3: Auth state changes suno
     const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
-      console.log("[DetachX] auth event:", event, session?.user?.email);
+      // Fix #14: only log PII in dev — prevents email exposure in production console
+      if (import.meta.env.DEV) {
+        console.log("[DetachX] auth event:", event, session?.user?.email);
+      } else {
+        console.log("[DetachX] auth event:", event);
+      }
       setSession(session);
       setChecking(false);
     });
@@ -78,6 +84,9 @@ export default function App() {
         } />
         <Route path="/results" element={
           session ? <ResultsPage session={session} /> : <Navigate to="/login" replace />
+        } />
+        <Route path="/footprint" element={
+          session ? <FootprintPage session={session} /> : <Navigate to="/login" replace />
         } />
       </Routes>
     </HashRouter>

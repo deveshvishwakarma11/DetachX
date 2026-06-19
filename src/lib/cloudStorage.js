@@ -191,9 +191,68 @@ export async function migrateFromLocalStorage(userEmail) {
   }
 }
 
+// ── Token refresh helpers ─────────────────────────────────────────────────────
+
+// Check if a token is within 5 minutes of expiry or already expired
+function isTokenExpiredOrExpiring(session) {
+  if (!session?.expires_at) return true;
+  const expiresAt  = session.expires_at * 1000; // seconds → ms
+  const now        = Date.now();
+  const fiveMinMs  = 5 * 60 * 1000;
+  return now >= expiresAt - fiveMinMs;
+}
+
+// ✅ Get a fresh Gmail OAuth token — refresh if needed
+export async function getFreshGmailToken() {
+  try {
+    // Ask Supabase for current session
+    const { data, error } = await supabase.auth.getSession();
+    if (error || !data.session) {
+      console.warn("[DetachX] getFreshGmailToken: no session");
+      return null;
+    }
+
+    let session = data.session;
+
+    // If token is expired or expiring soon — refresh it
+    if (isTokenExpiredOrExpiring(session)) {
+      console.log("[DetachX] token expiring — refreshing session");
+      const { data: refreshed, error: refreshError } =
+        await supabase.auth.refreshSession();
+      if (refreshError || !refreshed.session) {
+        console.error("[DetachX] session refresh failed:", refreshError?.message);
+        return null;
+      }
+      session = refreshed.session;
+    }
+
+    const token = session.provider_token;
+    if (!token) {
+      console.warn("[DetachX] provider_token missing from session");
+      return null;
+    }
+
+    // ✅ Always update localStorage with latest token
+    sessionStorage.setItem("gmail_token", token);
+    console.log("[DetachX] getFreshGmailToken → token saved, expires_at:",
+      new Date(session.expires_at * 1000).toLocaleTimeString());
+    return token;
+  } catch (err) {
+    console.error("[DetachX] getFreshGmailToken error:", err);
+    return null;
+  }
+}
+
 // ── Migrate old statuses already in Supabase ──────────────────────────────────
 // Run once to fix existing DB records
+// Fix #5: Uses localStorage checkpoint to avoid re-running on every page load
 export async function migrateSupabaseStatuses(userEmail) {
+  // Checkpoint: if already migrated on this device, skip entirely
+  const alreadyMigrated = localStorage.getItem("detachx_supabase_migrated");
+  if (alreadyMigrated) {
+    return;
+  }
+
   const { data, error } = await supabase
     .from("unsub_history")
     .select("domain, verification_status")
@@ -206,7 +265,9 @@ export async function migrateSupabaseStatuses(userEmail) {
   );
 
   if (toUpdate.length === 0) {
-    console.log("[DetachX] migrateSupabaseStatuses: nothing to migrate");
+    // Nothing to migrate — set checkpoint so we never query again
+    localStorage.setItem("detachx_supabase_migrated", "true");
+    console.log("[DetachX] migrateSupabaseStatuses: nothing to migrate — marked done");
     return;
   }
 
@@ -216,5 +277,8 @@ export async function migrateSupabaseStatuses(userEmail) {
     const newStatus = migrateStatus(row.verification_status);
     await updateUnsubStatus(userEmail, row.domain, newStatus);
   }
+
+  // Set checkpoint after successful migration
+  localStorage.setItem("detachx_supabase_migrated", "true");
   console.log("[DetachX] migrateSupabaseStatuses: done");
 }

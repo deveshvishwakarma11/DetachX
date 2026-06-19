@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { updateUnsubStatus } from "./lib/cloudStorage";
+import { updateUnsubStatus, getFreshGmailToken } from "./lib/cloudStorage";
+import { gmailFetch, gmailFetchWithRetry } from "./lib/gmailApi";
 
 const scanStyles = `
   .scan-page {
@@ -105,7 +106,6 @@ const MAX_EMAILS = 5000;
 const PAGE_SIZE  = 50;
 const META_CHUNK = 10;
 const BODY_CHUNK = 5;
-
 // ── Classification signals ────────────────────────────────────────────────────
 const NEWSLETTER_SIGNALS = [
   "newsletter","digest","weekly","monthly","daily update",
@@ -223,18 +223,12 @@ function extractUnsubUrlFromText(text) {
   return null;
 }
 
-async function gmailFetch(url, token) {
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (res.status === 401) throw new Error("TOKEN_EXPIRED");
-  if (!res.ok)            throw new Error(`API_ERROR_${res.status}`);
-  return res.json();
-}
-
-async function fetchBodyUnsubUrl(messageId, token) {
+async function fetchBodyUnsubUrl(messageId, token, refreshToken) {
   try {
-    const msg   = await gmailFetch(
+    const msg = await gmailFetchWithRetry(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`,
-      token
+      token,
+      { refreshToken }
     );
     const parts = extractBodyParts(msg.payload);
     const html  = parts.find((p) => p.mimeType === "text/html");
@@ -245,6 +239,54 @@ async function fetchBodyUnsubUrl(messageId, token) {
   } catch { return null; }
 }
 
+// ── Checkpoint helpers for partial scan results (Fix #9) ────────────────────
+// Saves progress after each phase so failures don't lose all data
+
+function saveCheckpoint(phase, data) {
+  try {
+    localStorage.setItem("scan_checkpoint", JSON.stringify({
+      phase,
+      data,
+      savedAt: new Date().toISOString(),
+    }));
+  } catch {
+    // localStorage full — ignore
+  }
+}
+
+function clearCheckpoint() {
+  localStorage.removeItem("scan_checkpoint");
+}
+
+function buildPartialResult(checkpoint) {
+  if (!checkpoint || checkpoint.phase < 2) return null;
+  const { data } = checkpoint;
+  const candidates = Object.values(data.candidateMap || {}).map((c) => {
+    const freq = (data.frequencyMap || {})[c.domain] || {};
+    return {
+      from:          c.from,
+      subject:       c.subject,
+      domain:        c.domain,
+      unsubUrl:      c.unsubUrl      || null,
+      emailCount:    freq.count      || 1,
+      lastReceived:  freq.lastReceived  || null,
+      firstReceived: freq.firstReceived || null,
+    };
+  });
+  candidates.sort((a, b) => b.emailCount - a.emailCount);
+  const finalList = candidates.slice(0, 100);
+  return {
+    total:       data.total || 0,
+    promos:      data.promos || 0,
+    newsletters: data.newsletters || 0,
+    unsubCount:  finalList.length,
+    unsubList:   finalList,
+    scannedAt:   checkpoint.savedAt,
+    userEmail:   data.userEmail || "",
+    partial:     true,
+  };
+}
+
 function loadExcludedDomains() {
   const set = new Set();
   try { JSON.parse(localStorage.getItem("detachx_unsub_history") || "[]").forEach((h) => set.add(h.domain)); } catch {}
@@ -253,7 +295,7 @@ function loadExcludedDomains() {
 }
 
 // ── Main scan ─────────────────────────────────────────────────────────────────
-async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
+async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter, refreshToken) {
   const excluded  = loadExcludedDomains();
   const userEmail = JSON.parse(localStorage.getItem("detachx_user") || "{}").email || "";
 
@@ -282,8 +324,10 @@ async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
   while (allIds.length < MAX_EMAILS) {
     const params = new URLSearchParams({ maxResults: PAGE_SIZE });
     if (pageToken) params.set("pageToken", pageToken);
-    const data = await gmailFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`, token
+    const data = await gmailFetchWithRetry(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`,
+      token,
+      { refreshToken }
     );
     if (!data.messages?.length) break;
     allIds    = allIds.concat(data.messages.map((m) => m.id));
@@ -298,6 +342,9 @@ async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
   onStatus(`Found ${total.toLocaleString()} emails. Reading metadata…`);
   onProgress(8);
 
+  // Fix #9: Checkpoint after Phase 1
+  saveCheckpoint(1, { total });
+
   // ── Phase 2: Metadata scan ────────────────────────────────────────────────
   onPhase("Phase 2 — Analysing senders");
 
@@ -311,14 +358,15 @@ async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
     const chunk   = allIds.slice(i, i + META_CHUNK);
     const details = await Promise.all(
       chunk.map((id) =>
-        gmailFetch(
+        gmailFetchWithRetry(
           `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}` +
           `?format=metadata` +
           `&metadataHeaders=From` +
           `&metadataHeaders=Subject` +
           `&metadataHeaders=List-Unsubscribe` +
           `&metadataHeaders=Date`,
-          token
+          token,
+          { refreshToken }
         )
       )
     );
@@ -399,6 +447,15 @@ async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
     onCounter(`${Object.keys(candidateMap).length} candidates found`);
   }
 
+  // Fix #9: Checkpoint after Phase 2 (buildable partial result)
+  saveCheckpoint(2, {
+    total, promos, newsletters,
+    candidateMap,
+    frequencyMap,
+    failedUnsubDomains: [...failedUnsubDomains],
+    userEmail,
+  });
+
   // ── Phase 3: Deep body scan ───────────────────────────────────────────────
   const needsBody = Object.values(candidateMap).filter((c) => c.needsBody);
   onPhase("Phase 3 — Deep body scan");
@@ -408,7 +465,9 @@ async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
     onProgress(57);
     for (let i = 0; i < needsBody.length; i += BODY_CHUNK) {
       const chunk = needsBody.slice(i, i + BODY_CHUNK);
-      const urls  = await Promise.all(chunk.map((c) => fetchBodyUnsubUrl(c.messageId, token)));
+      const urls  = await Promise.all(
+        chunk.map((c) => fetchBodyUnsubUrl(c.messageId, token, refreshToken))
+      );
       chunk.forEach((c, idx) => {
         if (urls[idx]) {
           candidateMap[c.domain].unsubUrl  = urls[idx];
@@ -424,15 +483,44 @@ async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
     await new Promise((r) => setTimeout(r, 300));
   }
 
+  // Fix #9: Checkpoint after Phase 3 (updated unsubUrls)
+  saveCheckpoint(3, {
+    total, promos, newsletters,
+    candidateMap,
+    frequencyMap,
+    failedUnsubDomains: [...failedUnsubDomains],
+    userEmail,
+  });
+
   // ── Phase 4: Apply failed unsub status ───────────────────────────────────
   onPhase("Phase 4 — Finalising");
   onStatus("Checking unsubscribe results…");
   onProgress(92);
 
   if (failedUnsubDomains.size > 0) {
-    // ✅ Update localStorage
+    // Fix #7: Read current state BEFORE overwriting localStorage.
+    // If the user manually re-confirmed unsubscribing from a domain
+    // (via results tab) while the scan was running, we must not
+    // overwrite their action back to "unsubscribe_failed".
+    const currentHistory = (() => {
+      try {
+        return JSON.parse(localStorage.getItem("detachx_unsub_history") || "[]");
+      } catch { return []; }
+    })();
+    const currentlyUnsubbed = new Set(
+      currentHistory
+        .filter((h) => h.verificationStatus === "user_unsubscribed")
+        .map((h) => h.domain)
+    );
+
+    // Only update domains not re-confirmed by the user
+    const domainsToUpdate = [...failedUnsubDomains].filter(
+      (d) => !currentlyUnsubbed.has(d)
+    );
+
+    // ✅ Update localStorage (skip domains user re-confirmed)
     const updatedHistory = unsubHistory.map((entry) => {
-      if (failedUnsubDomains.has(entry.domain)) {
+      if (failedUnsubDomains.has(entry.domain) && !currentlyUnsubbed.has(entry.domain)) {
         return { ...entry, verificationStatus: "unsubscribe_failed" };
       }
       return entry;
@@ -440,11 +528,17 @@ async function runGmailScan(token, onProgress, onStatus, onPhase, onCounter) {
     localStorage.setItem("detachx_unsub_history", JSON.stringify(updatedHistory));
 
     // ✅ Sync to Supabase
-    if (userEmail) {
-      for (const domain of failedUnsubDomains) {
+    if (userEmail && domainsToUpdate.length > 0) {
+      for (const domain of domainsToUpdate) {
         await updateUnsubStatus(userEmail, domain, "unsubscribe_failed");
       }
     }
+
+    const skippedCount = failedUnsubDomains.size - domainsToUpdate.length;
+    console.log(
+      `[DetachX] unsubscribe_failed updated: ${domainsToUpdate.length} domains` +
+        (skippedCount > 0 ? ` (skipped ${skippedCount} — user re-confirmed)` : "")
+    );
 
     console.log(
       "[DetachX] unsubscribe_failed updated:",
@@ -505,22 +599,66 @@ export default function ScanPage({ session }) {
   const [counter,  setCounter]  = useState("");
   const [error,    setError]    = useState(null);
 
-  useEffect(() => { startScan(); }, []);
+  const scanStarted = useRef(false);
+
+  useEffect(() => {
+    if (scanStarted.current) return;
+    scanStarted.current = true;
+    startScan();
+  }, []);
 
   async function startScan() {
     setError(null); setProgress(0); setPhase(""); setCounter("");
-    const token = localStorage.getItem("gmail_token");
+    const token = sessionStorage.getItem("gmail_token") || localStorage.getItem("gmail_token");
     if (!token) { navigate("/login"); return; }
     localStorage.removeItem("scan_result");
     try {
-      const result = await runGmailScan(token, setProgress, setStatus, setPhase, setCounter);
+      const result = await runGmailScan(
+        token,
+        setProgress,
+        setStatus,
+        setPhase,
+        setCounter,
+        getFreshGmailToken   // Fix #2: pass token refresh callback
+      );
+      clearCheckpoint();
       localStorage.setItem("scan_result", JSON.stringify(result));
       setTimeout(() => navigate("/results"), 700);
     } catch (err) {
+      // Fix #9: If scan failed partway through, try to use a partial result
+      if (err.message !== "TOKEN_EXPIRED") {
+        try {
+          const checkpointRaw = localStorage.getItem("scan_checkpoint");
+          if (checkpointRaw) {
+            const checkpoint = JSON.parse(checkpointRaw);
+            const partial = buildPartialResult(checkpoint);
+            if (partial && partial.unsubList.length > 0) {
+              clearCheckpoint();
+              localStorage.setItem("scan_result", JSON.stringify(partial));
+              setTimeout(() => navigate("/results"), 700);
+              return;
+            }
+          }
+        } catch {
+          // Checkpoint parse failed — ignore, show normal error
+        }
+      }
+
       if (err.message === "TOKEN_EXPIRED") {
+        setError("Gmail access expired. Please log in again.");
+        sessionStorage.removeItem("gmail_token");
         localStorage.removeItem("gmail_token");
         localStorage.removeItem("scan_result");
-        navigate("/login");
+        setTimeout(() => navigate("/login"), 2000);
+      } else if (err.message === "REQUEST_TIMEOUT") {
+        setError("Gmail is taking too long to respond. Check your connection and try again.");
+        console.error("[DetachX] scan timeout:", err);
+      } else if (err.message.startsWith("API_ERROR_429")) {
+        setError("Gmail rate limit reached. Please wait a moment and try again.");
+        console.error("[DetachX] rate limited:", err);
+      } else if (err.message.startsWith("API_ERROR_5")) {
+        setError("Gmail server error. Please try again.");
+        console.error("[DetachX] server error:", err);
       } else {
         setError("Something went wrong. Please try again.");
         console.error("[DetachX] scan error:", err);

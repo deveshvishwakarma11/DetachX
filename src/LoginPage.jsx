@@ -149,7 +149,7 @@ export default function LoginPage() {
             "https://www.googleapis.com/auth/gmail.settings.basic",
           ].join(" "),
         
-         redirectTo:"http://localhost:5173",
+         redirectTo: import.meta.env.VITE_APP_URL || window.location.origin,
           queryParams: {
             access_type: "offline",
             prompt:      "consent",
