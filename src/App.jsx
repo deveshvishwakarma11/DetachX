@@ -7,6 +7,11 @@ import DashboardPage from "./DashboardPage";
 import ScanPage      from "./ScanPage";
 import ResultsPage   from "./ResultsPage";
 import FootprintPage  from "./FootprintPage";
+import SettingsPage   from "./SettingsPage";
+import PrivacyPage    from "./PrivacyPage";
+import TermsPage      from "./TermsPage";
+import ContactPage    from "./ContactPage";
+import AboutPage      from "./AboutPage";
 
 export default function App() {
   const [session,  setSession]  = useState(undefined);
@@ -88,6 +93,13 @@ export default function App() {
         <Route path="/footprint" element={
           session ? <FootprintPage session={session} /> : <Navigate to="/login" replace />
         } />
+        <Route path="/settings" element={
+          session ? <SettingsPage session={session} /> : <Navigate to="/login" replace />
+        } />
+        <Route path="/privacy" element={<PrivacyPage session={session} />} />
+        <Route path="/terms" element={<TermsPage session={session} />} />
+        <Route path="/contact" element={<ContactPage session={session} />} />
+        <Route path="/about" element={<AboutPage session={session} />} />
       </Routes>
     </HashRouter>
   );

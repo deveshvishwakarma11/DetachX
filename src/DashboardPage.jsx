@@ -108,6 +108,8 @@ const dashStyles = `
     position: absolute; bottom: 2rem; font-size: 0.72rem;
     color: #6B6880; letter-spacing: 0.05em; z-index: 10;
   }
+  .dash-page .footer-note a { color: #6C63FF; text-decoration: none; }
+  .dash-page .footer-note a:hover { text-decoration: underline; }
   @keyframes pulse-x {
     0%, 100% { opacity: 0.025; transform: scale(1); }
     50%       { opacity: 0.04;  transform: scale(1.04); }
@@ -315,10 +317,26 @@ export default function DashboardPage({ session }) {
             Digital Footprint
           </button>
 
+          <button className="fp-btn" onClick={() => navigate("/settings")}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5"/>
+              <path d="M8 5v3l2 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+            Settings
+          </button>
           <button className="logout-btn" onClick={handleLogout}>Log out</button>
         </div>
 
-        <p className="footer-note">© 2026 DetachX · All rights reserved</p>
+        <p className="footer-note">
+          © 2026 DetachX · All rights reserved<br />
+          <a href="#" onClick={(e) => { e.preventDefault(); navigate("/privacy"); }}>Privacy Policy</a>
+          <span> · </span>
+          <a href="#" onClick={(e) => { e.preventDefault(); navigate("/terms"); }}>Terms of Service</a>
+          <span> · </span>
+          <a href="#" onClick={(e) => { e.preventDefault(); navigate("/contact"); }}>Contact</a>
+          <span> · </span>
+          <a href="#" onClick={(e) => { e.preventDefault(); navigate("/about"); }}>About</a>
+        </p>
       </div>
     </>
   );

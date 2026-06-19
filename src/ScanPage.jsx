@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { updateUnsubStatus, getFreshGmailToken } from "./lib/cloudStorage";
 import { gmailFetch, gmailFetchWithRetry } from "./lib/gmailApi";
+import { recordScanHistory } from "./lib/userStorage";
 
 const scanStyles = `
   .scan-page {
@@ -623,6 +624,12 @@ export default function ScanPage({ session }) {
       );
       clearCheckpoint();
       localStorage.setItem("scan_result", JSON.stringify(result));
+      await recordScanHistory(result.userEmail, {
+        scanType: "inbox",
+        totalEmails: result.total || 0,
+        activeFound: result.unsubCount || 0,
+        unsubscribed: 0,
+      });
       setTimeout(() => navigate("/results"), 700);
     } catch (err) {
       // Fix #9: If scan failed partway through, try to use a partial result

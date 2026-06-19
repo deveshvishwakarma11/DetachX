@@ -6,10 +6,8 @@ import { computeAllRisks, computeRiskSummary } from "./lib/riskScoring";
 import { generateInsights } from "./lib/aiInsights";
 import { saveFootprintResults, loadFootprintAccounts, getLatestScanTime, deleteFootprintEntry } from "./lib/footprintStorage";
 import { getFreshGmailToken } from "./lib/cloudStorage";
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// STYLES (inline CSS — matches the dark theme of the rest of the app)
-// ═══════════════════════════════════════════════════════════════════════════════
+import { lookupDeletionInfo, getBestActionLink } from "./lib/deletionAssistant";
+import { recordScanHistory } from "./lib/userStorage";
 
 const S = `
   *, *::before, *::after { box-sizing: border-box; }
@@ -39,8 +37,6 @@ const S = `
   .fsh { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 1rem; }
   .fst { font-size: 0.9rem; font-weight: 600; color: #F0EEE9; }
   .fsh .fsi { width: 18px; height: 18px; }
-
-  /* ── Insights ── */
   .insights { display: flex; flex-direction: column; gap: 0.6rem; }
   .insight { display: flex; gap: 0.75rem; background: #111118; border: 1px solid #1E1E2A; border-radius: 10px; padding: 0.85rem 1rem; transition: border-color 0.2s; }
   .insight:hover { border-color: #2A2A38; }
@@ -48,15 +44,11 @@ const S = `
   .insight .ii2 { flex: 1; min-width: 0; }
   .insight .it { font-size: 0.82rem; font-weight: 600; color: #F0EEE9; margin-bottom: 2px; }
   .insight .im { font-size: 0.75rem; color: #6B6880; line-height: 1.55; }
-
-  /* ── Categories grid ── */
   .catg { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.6rem; }
   .catc { background: #111118; border: 1px solid #1E1E2A; border-radius: 8px; padding: 0.65rem 0.75rem; text-align: center; }
   .catc .cn { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: #4A4860; margin-bottom: 2px; }
   .catc .cv { font-size: 1.35rem; font-weight: 700; color: #F0EEE9; }
   .catc .cp { font-size: 0.65rem; color: #6B6880; }
-
-  /* ── Risk distribution ── */
   .riskb { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
   .riskb .rb { flex: 1; padding: 0.75rem 0.5rem; border-radius: 8px; text-align: center; border: 1px solid; }
   .riskb .rb .rl { font-size: 0.65rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 2px; }
@@ -64,8 +56,6 @@ const S = `
   .riskb .rb.low    { background: rgba(34,197,94,0.06);  border-color: rgba(34,197,94,0.2);  color: #22C55E; }
   .riskb .rb.medium { background: rgba(245,158,11,0.06); border-color: rgba(245,158,11,0.2); color: #F59E0B; }
   .riskb .rb.high   { background: rgba(239,68,68,0.06);  border-color: rgba(239,68,68,0.2);  color: #EF4444; }
-
-  /* ── Account list ── */
   .actls { display: flex; flex-direction: column; gap: 0.45rem; }
   .acrw { display: flex; align-items: center; gap: 0.7rem; background: #111118; border: 1px solid #1E1E2A; border-radius: 10px; padding: 0.7rem 1rem; transition: border-color 0.2s, background 0.2s; }
   .acrw:hover { border-color: #2A2A38; }
@@ -99,8 +89,15 @@ const S = `
   .acrw .status-dot.active   { background: #22C55E; }
   .acrw .status-dot.inactive { background: #F59E0B; }
   .acrw .status-dot.dormant  { background: #EF4444; }
-
-  /* ── Empty state ── */
+  .del-link {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-family: 'Space Grotesk', sans-serif; font-size: 0.65rem; font-weight: 500;
+    color: #6C63FF; text-decoration: none;
+    padding: 4px 10px; border-radius: 6px;
+    border: 1px solid rgba(108,99,255,0.2); background: rgba(108,99,255,0.06);
+    flex-shrink: 0; transition: background 0.15s, border-color 0.15s;
+  }
+  .del-link:hover { background: rgba(108,99,255,0.12); border-color: rgba(108,99,255,0.4); }
   .fempty { text-align: center; padding: 4rem 2rem; }
   .fempty .fei { font-size: 3rem; margin-bottom: 1rem; }
   .fempty h2 { font-size: 1.3rem; font-weight: 600; color: #F0EEE9; margin: 0 0 0.5rem; }
@@ -113,8 +110,6 @@ const S = `
   }
   .scan-now-btn:hover { background: #ffffff; transform: translateY(-1px); }
   .scan-now-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-
-  /* ── Scan progress ── */
   .scan-progress { text-align: center; padding: 3rem 2rem; }
   .scan-progress .spi { margin-bottom: 1.5rem; }
   .scan-progress .spt { font-size: 1.1rem; font-weight: 600; color: #F0EEE9; margin-bottom: 0.5rem; }
@@ -122,14 +117,10 @@ const S = `
   .scan-progress .spp { font-size: 0.7rem; color: #4A4860; }
   .sp-bar { width: 260px; height: 3px; background: #1E1E2A; border-radius: 99px; margin: 0.75rem auto; overflow: hidden; }
   .sp-bar .sp-fill { height: 100%; background: linear-gradient(90deg, #6C63FF, #A78BFA); border-radius: 99px; transition: width 0.4s ease; }
-
-  /* ── Scan error ── */
   .scan-error { text-align: center; padding: 3rem 2rem; }
   .scan-error .sei { font-size: 2rem; margin-bottom: 0.75rem; }
   .scan-error .set { font-size: 0.9rem; color: #EF4444; margin-bottom: 0.5rem; }
   .scan-error .ses { font-size: 0.78rem; color: #6B6880; margin-bottom: 1rem; }
-
-  /* ── Search bar ── */
   .fsbar { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; align-items: center; }
   .fsbar input {
     flex: 1; min-width: 160px; font-family: 'Space Grotesk', sans-serif;
@@ -146,13 +137,8 @@ const S = `
   }
   .fsbar select:focus { border-color: #6C63FF; }
   .fsbar .fcount { font-size: 0.7rem; color: #4A4860; }
-
-  /* ── Forgotten section ── */
   .forg-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 1px 6px; border-radius: 99px; background: rgba(239,68,68,0.1); color: #EF4444; border: 1px solid rgba(239,68,68,0.2); }
-
-  /* ── Footer note ── */
   .fp .ftn { position: absolute; bottom: 2rem; left: 0; right: 0; text-align: center; font-size: 0.7rem; color: #6B6880; letter-spacing: 0.05em; }
-
   @keyframes fa { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes sp { to { transform: rotate(360deg); } }
   @media (max-width: 600px) {
@@ -161,10 +147,6 @@ const S = `
     .fsec { padding: 0 1.25rem; } .catg { grid-template-columns: repeat(2,1fr); }
   }
 `;
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// HELPERS
-// ═══════════════════════════════════════════════════════════════════════════════
 
 const CATEGORY_ICONS = {
   "Developer Tools": "🛠️",
@@ -215,17 +197,13 @@ function isForgotten(service) {
   return age > 12 * 30.44 * 24 * 60 * 60 * 1000;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// COMPONENT
-// ═══════════════════════════════════════════════════════════════════════════════
-
 export default function FootprintPage({ session }) {
   const navigate = useNavigate();
   const user = session?.user;
   const userEmail = user?.email || "";
   const userPic = user?.user_metadata?.avatar_url || user?.user_metadata?.picture || "";
 
-  const [viewState, setViewState] = useState("loading"); // loading | idle | scanning | complete | error
+  const [viewState, setViewState] = useState("loading");
   const [progress,  setProgress]  = useState(0);
   const [phase,     setPhase]     = useState("");
   const [statusMsg, setStatusMsg] = useState("");
@@ -237,7 +215,6 @@ export default function FootprintPage({ session }) {
   const [search,      setSearch]      = useState("");
   const [catFilter,   setCatFilter]   = useState("all");
 
-  // Load cached data on mount
   useEffect(() => {
     if (!userEmail) return;
     loadCachedData();
@@ -252,7 +229,6 @@ export default function FootprintPage({ session }) {
       ]);
 
       if (accounts.length > 0) {
-        // Compute risk/insights for cached data if missing
         const scored = computeAllRisks(accounts);
         setServices(scored);
         setInsights(generateInsights(scored));
@@ -267,7 +243,6 @@ export default function FootprintPage({ session }) {
     }
   }
 
-  // ── Scan ──────────────────────────────────────────────────────────────────
   const handleScan = useCallback(async () => {
     setViewState("scanning");
     setProgress(0);
@@ -276,7 +251,6 @@ export default function FootprintPage({ session }) {
     setErrorMsg("");
 
     try {
-      // Get fresh token
       const token = await getFreshGmailToken();
       if (!token) {
         setErrorMsg("Gmail access expired. Please log in again.");
@@ -284,7 +258,6 @@ export default function FootprintPage({ session }) {
         return;
       }
 
-      // Run detection
       const rawResult = await detectDigitalFootprint(token, {
         onProgress:  setProgress,
         onStatus:    setStatusMsg,
@@ -292,41 +265,37 @@ export default function FootprintPage({ session }) {
         maxResults:  500,
       });
 
-      // Compute risk scores
       const scoredServices = computeAllRisks(rawResult.services);
       const riskSummary    = computeRiskSummary(scoredServices);
       const allInsights    = generateInsights(scoredServices);
 
-      // Update state
       setServices(scoredServices);
       setInsights(allInsights);
       setLastScanned(rawResult.scannedAt);
 
-      // Save to Supabase
-      const fullResult = {
-        ...rawResult,
-        services: scoredServices,
-      };
+      const fullResult = { ...rawResult, services: scoredServices };
       await saveFootprintResults(userEmail, fullResult);
 
-      setViewState("complete");
-      console.log("[DetachX Footprint] Scan complete:", {
-        services: scoredServices.length,
-        riskSummary,
-        insights: allInsights.length,
+      await recordScanHistory(userEmail, {
+        scanType: "footprint",
+        servicesFound: scoredServices.length,
+        riskSummary: {
+          low: riskSummary.low,
+          medium: riskSummary.medium,
+          high: riskSummary.high,
+        },
       });
+
+      setViewState("complete");
     } catch (err) {
       console.error("[DetachX Footprint] Scan failed:", err);
-      if (err.message === "TOKEN_EXPIRED") {
-        setErrorMsg("Gmail access expired. Please log in again.");
-      } else {
-        setErrorMsg(err.message || "Something went wrong during the scan.");
-      }
+      setErrorMsg(err.message === "TOKEN_EXPIRED"
+        ? "Gmail access expired. Please log in again."
+        : err.message || "Something went wrong during the scan.");
       setViewState("error");
     }
   }, [userEmail]);
 
-  // ── Delete entry ──────────────────────────────────────────────────────────
   const handleDelete = useCallback(async (domain) => {
     const ok = await deleteFootprintEntry(userEmail, domain);
     if (ok) {
@@ -334,23 +303,17 @@ export default function FootprintPage({ session }) {
     }
   }, [userEmail]);
 
-  // ── Filtered + sorted services ────────────────────────────────────────────
   const filteredServices = useMemo(() => {
     let result = [...services];
-
     if (search.trim()) {
       const q = search.toLowerCase();
       result = result.filter(
-        (s) =>
-          s.serviceName.toLowerCase().includes(q) ||
-          s.domain.toLowerCase().includes(q)
+        (s) => s.serviceName.toLowerCase().includes(q) || s.domain.toLowerCase().includes(q)
       );
     }
     if (catFilter !== "all") {
       result = result.filter((s) => s.category === catFilter);
     }
-
-    // Sort: high risk first, then by confidence desc
     result.sort((a, b) => {
       const riskOrder = { high: 0, medium: 1, low: 2 };
       const ra = riskOrder[a.riskLevel] || 1;
@@ -358,17 +321,11 @@ export default function FootprintPage({ session }) {
       if (ra !== rb) return ra - rb;
       return (b.confidenceScore || 0) - (a.confidenceScore || 0);
     });
-
     return result;
   }, [services, search, catFilter]);
 
-  // ── Forgotten accounts ────────────────────────────────────────────────────
-  const forgottenAccounts = useMemo(
-    () => services.filter(isForgotten),
-    [services]
-  );
+  const forgottenAccounts = useMemo(() => services.filter(isForgotten), [services]);
 
-  // ── Categories ────────────────────────────────────────────────────────────
   const categoryCounts = useMemo(() => {
     const counts = {};
     for (const s of services) {
@@ -378,10 +335,8 @@ export default function FootprintPage({ session }) {
     return Object.entries(counts).sort((a, b) => b[1] - a[1]);
   }, [services]);
 
-  // ── Risk summary ──────────────────────────────────────────────────────────
   const riskSummary = useMemo(() => computeRiskSummary(services), [services]);
 
-  // ── Render ────────────────────────────────────────────────────────────────
   const handleLogout = async () => {
     await supabase.auth.signOut();
     navigate("/");
@@ -392,8 +347,6 @@ export default function FootprintPage({ session }) {
       <style>{S}</style>
       <div className="fp">
         <div className="top-bar" />
-
-        {/* Nav */}
         <nav className="fnv">
           <div className="wm">Detach<span>X</span></div>
           <div className="nr">
@@ -404,7 +357,6 @@ export default function FootprintPage({ session }) {
           </div>
         </nav>
 
-        {/* ── LOADING ── */}
         {viewState === "loading" && (
           <div className="fempty">
             <div className="fei">🔍</div>
@@ -412,7 +364,6 @@ export default function FootprintPage({ session }) {
           </div>
         )}
 
-        {/* ── IDLE (no data) ── */}
         {viewState === "idle" && (
           <div className="fempty">
             <div className="fei">🔍</div>
@@ -434,7 +385,6 @@ export default function FootprintPage({ session }) {
           </div>
         )}
 
-        {/* ── SCANNING ── */}
         {viewState === "scanning" && (
           <div className="scan-progress">
             <div className="spi">
@@ -455,7 +405,6 @@ export default function FootprintPage({ session }) {
           </div>
         )}
 
-        {/* ── ERROR ── */}
         {viewState === "error" && (
           <div className="scan-error">
             <div className="sei">⚠️</div>
@@ -467,17 +416,14 @@ export default function FootprintPage({ session }) {
           </div>
         )}
 
-        {/* ── COMPLETE ── */}
         {viewState === "complete" && (
           <>
-            {/* Hero */}
             <div className="fhero">
               <h1>Your Digital Footprint</h1>
               <p>{services.length} accounts discovered · {categoryCounts.length} categories</p>
               {lastScanned && <p className="lscan">Last scanned: {fmt(lastScanned)}</p>}
             </div>
 
-            {/* Stats cards */}
             <div className="fgrd">
               <div className="fcd">
                 <div className="acb" style={{ background: "#6C63FF" }} />
@@ -528,7 +474,6 @@ export default function FootprintPage({ session }) {
               </div>
             </div>
 
-            {/* AI Insights */}
             {insights.length > 0 && (
               <div className="fsec">
                 <div className="fsh">
@@ -551,7 +496,6 @@ export default function FootprintPage({ session }) {
               </div>
             )}
 
-            {/* Risk Analysis */}
             <div className="fsec">
               <div className="fsh">
                 <svg className="fsi" viewBox="0 0 18 18" fill="none">
@@ -580,7 +524,6 @@ export default function FootprintPage({ session }) {
               )}
             </div>
 
-            {/* Category Breakdown */}
             <div className="fsec">
               <div className="fsh">
                 <svg className="fsi" viewBox="0 0 18 18" fill="none">
@@ -602,7 +545,6 @@ export default function FootprintPage({ session }) {
               </div>
             </div>
 
-            {/* Forgotten Accounts */}
             {forgottenAccounts.length > 0 && (
               <div className="fsec">
                 <div className="fsh">
@@ -634,7 +576,6 @@ export default function FootprintPage({ session }) {
               </div>
             )}
 
-            {/* All Accounts */}
             <div className="fsec">
               <div className="fsh">
                 <svg className="fsi" viewBox="0 0 18 18" fill="none">
@@ -643,7 +584,6 @@ export default function FootprintPage({ session }) {
                 <span className="fst">All Accounts ({filteredServices.length})</span>
               </div>
 
-              {/* Search + Filter */}
               <div className="fsbar">
                 <input
                   type="text"
@@ -660,40 +600,68 @@ export default function FootprintPage({ session }) {
                 <span className="fcount">{filteredServices.length} shown</span>
               </div>
 
-              {/* Account rows */}
               <div className="actls">
                 {filteredServices.length === 0 ? (
                   <p style={{ textAlign: "center", padding: "2rem", color: "#4A4860", fontSize: "0.82rem" }}>
                     No accounts match your search.
                   </p>
                 ) : (
-                  filteredServices.map((svc, i) => (
-                    <div className="acrw" key={svc.domain || i}>
-                      <div className={`aic ${CATEGORY_CSS_CLASSES[svc.category] || "unk"}`}>
-                        {svc.serviceName?.[0] || "?"}
-                      </div>
-                      <div className="aii">
-                        <div className="asn">{svc.serviceName}</div>
-                        <div className="asd">{svc.domain}</div>
-                        <div className="asm">
-                          <span className={`risk-tag ${svc.riskLevel || "medium"}`}>
-                            {svc.riskLevel?.toUpperCase() || "MED"} · {svc.riskScore || "?"}
-                          </span>
-                          <span className="conf">{svc.confidenceScore}% confidence</span>
-                          <span>
-                            <span className={`status-dot ${svc.status || "active"}`} />
-                            {" "}{svc.status || "active"}
-                          </span>
-                          {svc.lastSeen && <span>Last: {fmt(svc.lastSeen)}</span>}
+                  filteredServices.map((svc, i) => {
+                    const delInfo = lookupDeletionInfo(svc.domain);
+                    const bestLink = getBestActionLink(svc.domain);
+                    return (
+                      <div className="acrw" key={svc.domain || i}>
+                        <div className={`aic ${CATEGORY_CSS_CLASSES[svc.category] || "unk"}`}>
+                          {svc.serviceName?.[0] || "?"}
                         </div>
+                        <div className="aii">
+                          <div className="asn">{svc.serviceName}</div>
+                          <div className="asd">{svc.domain}</div>
+                          <div className="asm">
+                            <span className={`risk-tag ${svc.riskLevel || "medium"}`}>
+                              {svc.riskLevel?.toUpperCase() || "MED"} · {svc.riskScore || "?"}
+                            </span>
+                            <span className="conf">{svc.confidenceScore}% confidence</span>
+                            <span>
+                              <span className={`status-dot ${svc.status || "active"}`} />
+                              {" "}{svc.status || "active"}
+                            </span>
+                            {svc.lastSeen && <span>Last: {fmt(svc.lastSeen)}</span>}
+                          </div>
+                        </div>
+                        {bestLink.url && (
+                          <a
+                            href={bestLink.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="del-link"
+                            title={`${bestLink.label} — ${svc.serviceName}`}
+                          >
+                            {delInfo?.deletionUrl ? (
+                              <>
+                                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                  <path d="M1.5 10.5l9-9m-9 0h9v9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                                </svg>
+                                Delete
+                              </>
+                            ) : (
+                              <>
+                                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                  <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.3"/>
+                                  <path d="M6 3.5v3M6 8v.01" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                                </svg>
+                                Privacy
+                              </>
+                            )}
+                          </a>
+                        )}
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>
 
-            {/* Rescan button */}
             <div style={{ textAlign: "center", marginTop: "2rem", padding: "0 2rem" }}>
               <button className="scan-now-btn" onClick={handleScan}>
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
