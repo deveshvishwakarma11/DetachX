@@ -1,16 +1,69 @@
-# React + Vite
+# DetachX
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Gmail Cleanup and Digital Footprint Discovery Platform.
 
-Currently, two official plugins are available:
+DetachX helps users discover online accounts linked to their 
+email address, analyze digital exposure, identify forgotten 
+accounts, and manage inbox subscriptions from a single dashboard.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Features
 
-## React Compiler
+* Gmail Inbox Scanner
+* Honest Unsubscribe Tracking
+* Email Filtering & Cleanup
+* Digital Footprint Discovery
+* Automated Insights
+* Smart Risk Analysis
+* Category Classification
+* Supabase Cloud Sync
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Tech Stack
 
-## Expanding the ESLint configuration
+* React
+* Vite
+* Supabase
+* Gmail API
+* JavaScript
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Installation
+
+```bash
+git clone https://github.com/deveshvishwakarma11/DetachX.git
+cd DetachX
+npm install
+npm run dev
+```
+
+## Current Modules
+
+### Inbox Cleaner
+
+* Scan inbox
+* Detect marketing emails
+* Unsubscribe support
+* Filter unwanted emails
+
+### Digital Footprint Discovery
+
+* Discover online accounts linked to email
+* Category classification
+* Risk scoring
+* AI-generated insights
+* Forgotten account detection
+
+## Roadmap
+
+* Profile & Settings
+* Privacy Policy
+* Terms & Conditions
+* Contact Page
+* Account Deletion Assistant
+* Premium Dashboard
+
+## Author
+
+Devesh Vishwakarma (Nikk)
+
+## License
+
+MIT License
